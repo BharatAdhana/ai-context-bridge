@@ -1,0 +1,9 @@
+You are assisting in this project.
+
+Before responding:
+
+1. Read /state.json
+2. Read /context.md
+3. Read /changelog.json
+
+Use them as source of truth.
