@@ -11,9 +11,11 @@ const {
   getContextPaths,
   readJsonFile,
   renderTemplate,
+  updateRuntimeConfig,
   writeJsonAtomic,
   writeTextAtomic
 } = require('./stateManager');
+const { ensureGitInitialized } = require('./gitSync');
 
 async function initProject(projectRoot, options) {
   const settings = Object.assign({ logger: null, force: false }, options);
@@ -60,17 +62,20 @@ async function initProject(projectRoot, options) {
     await writeTextAtomic(paths.contextFile, initialContext);
   }
 
-  if (!existingConfig) {
-    await writeJsonAtomic(paths.configFile, {
-      port: 3333,
-      debounceMs: 600,
-      gitSync: {
-        enabled: false,
-        push: true,
-        commitMessage: 'auto: update AI context'
-      }
-    });
-  }
+  await updateRuntimeConfig(
+    projectRoot,
+    existingConfig
+      ? null
+      : {
+          gitSync: {
+            enabled: true,
+            push: true,
+            commitMessage: 'auto: update AI context'
+          }
+        }
+  );
+
+  await ensureGitInitialized(projectRoot, logger);
 
   if (logger) {
     logger.info(`Initialized AI context in ${contextDir}`);

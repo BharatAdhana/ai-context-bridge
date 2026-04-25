@@ -8,6 +8,7 @@ Think of it as Git for AI context.
 
 ```bash
 npx aibridge-context init
+npx aibridge-context link-github
 npx aibridge-context start
 ```
 
@@ -29,6 +30,7 @@ After installing globally, you can use:
 
 ```bash
 aibridge init
+aibridge link-github
 ```
 
 ## Features
@@ -50,12 +52,37 @@ To use the local CLI in this repository:
 
 ```bash
 npx aibridge-context init
+npx aibridge-context link-github
 npx aibridge-context start
 ```
 
 If published to npm, the package exposes the `aibridge` binary.
 
 `ai-context` is supported as a legacy alias.
+
+## Use With AI
+
+After enabling GitHub sync, use:
+
+```text
+https://raw.githubusercontent.com/<user>/<repo>/main/.ai-context/state.json
+```
+
+This URL always returns the latest project state.
+
+You can also share:
+
+```text
+https://raw.githubusercontent.com/<user>/<repo>/main/.ai-context/brain.txt
+```
+
+Typical flow:
+
+```bash
+npx aibridge-context init
+aibridge link-github
+npx aibridge-context start
+```
 
 ## Commands
 
@@ -82,6 +109,10 @@ Default server port: `3333`
 ### `aibridge update`
 
 Triggers a manual context refresh and optional git sync.
+
+### `aibridge link-github`
+
+Prompts for a GitHub repository URL, links `origin`, pushes `main`, saves the repo URL to `.ai-context/config.json`, and enables public AI sync output.
 
 ## Generated files
 

@@ -29,11 +29,40 @@ async function isGitRepository(projectRoot) {
 
 async function hasRemote(projectRoot) {
   try {
-    const result = await runGit(projectRoot, ['remote']);
+    const result = await runGit(projectRoot, ['remote', 'get-url', 'origin']);
     return result.stdout.trim().length > 0;
   } catch (error) {
     return false;
   }
+}
+
+async function getRemoteOriginUrl(projectRoot) {
+  try {
+    const result = await runGit(projectRoot, ['remote', 'get-url', 'origin']);
+    return result.stdout.trim();
+  } catch (error) {
+    return '';
+  }
+}
+
+async function getCurrentBranch(projectRoot) {
+  try {
+    const result = await runGit(projectRoot, ['branch', '--show-current']);
+    return result.stdout.trim();
+  } catch (error) {
+    return '';
+  }
+}
+
+async function ensureMainBranch(projectRoot) {
+  const currentBranch = await getCurrentBranch(projectRoot);
+
+  if (currentBranch === 'main') {
+    return 'main';
+  }
+
+  await runGit(projectRoot, ['branch', '-M', 'main']);
+  return 'main';
 }
 
 async function hasStagedContextChanges(projectRoot) {
@@ -45,12 +74,149 @@ async function hasStagedContextChanges(projectRoot) {
   }
 }
 
+async function ensureGitInitialized(projectRoot, logger) {
+  const repositoryReady = await isGitRepository(projectRoot);
+
+  if (repositoryReady) {
+    return {
+      initialized: false
+    };
+  }
+
+  try {
+    await runGit(projectRoot, ['init']);
+    await runGit(projectRoot, ['add', '.']);
+    try {
+      await runGit(projectRoot, ['commit', '-m', 'initial commit']);
+    } catch (error) {
+      if (!/nothing to commit/i.test(error.stderr || error.message)) {
+        throw error;
+      }
+    }
+    await ensureMainBranch(projectRoot);
+
+    if (logger) {
+      logger.info('Git initialized');
+    }
+
+    return {
+      initialized: true
+    };
+  } catch (error) {
+    if (logger) {
+      logger.warn(`Git initialization failed gracefully: ${error.message}`);
+    }
+
+    return {
+      initialized: false,
+      error: error.message
+    };
+  }
+}
+
+function parseGitHubRepo(repoUrl) {
+  if (!repoUrl) {
+    return null;
+  }
+
+  const cleanedUrl = repoUrl.trim().replace(/\.git$/, '');
+  let match = cleanedUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/i);
+
+  if (!match) {
+    match = cleanedUrl.match(/^git@github\.com:([^/]+)\/([^/]+)$/i);
+  }
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    owner: match[1],
+    repo: match[2]
+  };
+}
+
+function buildPublicAiUrls(repoUrl, branch) {
+  const parsedRepo = parseGitHubRepo(repoUrl);
+
+  if (!parsedRepo) {
+    return null;
+  }
+
+  const baseUrl = `https://raw.githubusercontent.com/${parsedRepo.owner}/${parsedRepo.repo}/${branch}`;
+
+  return {
+    stateUrl: `${baseUrl}/.ai-context/state.json`,
+    brainUrl: `${baseUrl}/.ai-context/brain.txt`
+  };
+}
+
+function logMissingRemoteInstructions(logger) {
+  if (!logger) {
+    return;
+  }
+
+  logger.warn('No GitHub remote detected.');
+  logger.info('Run:');
+  logger.info('git remote add origin <repo-url>');
+  logger.info('git push -u origin main');
+}
+
+function logPublicAiEndpoints(logger, urls) {
+  if (!logger || !urls) {
+    return;
+  }
+
+  logger.info('Public AI endpoint:');
+  logger.info(urls.stateUrl);
+  logger.info('Use this with AI:');
+  logger.info(urls.brainUrl);
+}
+
+async function linkGithubRepository(projectRoot, repoUrl, logger) {
+  const normalizedRepoUrl = repoUrl.trim();
+  await ensureGitInitialized(projectRoot, logger);
+
+  try {
+    const existingRemoteUrl = await getRemoteOriginUrl(projectRoot);
+
+    if (!existingRemoteUrl) {
+      await runGit(projectRoot, ['remote', 'add', 'origin', normalizedRepoUrl]);
+    } else if (existingRemoteUrl !== normalizedRepoUrl) {
+      await runGit(projectRoot, ['remote', 'set-url', 'origin', normalizedRepoUrl]);
+    }
+
+    await ensureMainBranch(projectRoot);
+    await runGit(projectRoot, ['push', '-u', 'origin', 'main']);
+
+    const urls = buildPublicAiUrls(normalizedRepoUrl, 'main');
+    logPublicAiEndpoints(logger, urls);
+
+    return {
+      ok: true,
+      urls
+    };
+  } catch (error) {
+    if (logger) {
+      logger.warn(`GitHub link failed gracefully: ${error.message}`);
+    }
+
+    return {
+      ok: false,
+      error: error.message
+    };
+  }
+}
+
 async function syncContextToGit(projectRoot, config, logger) {
   const settings = Object.assign(
     {
-      enabled: false,
+      enabled: true,
       push: true,
-      commitMessage: 'auto: update AI context'
+      commitMessage: 'auto: update AI context',
+      remote: 'origin',
+      branch: 'main',
+      repoUrl: ''
     },
     config
   );
@@ -76,10 +242,25 @@ async function syncContextToGit(projectRoot, config, logger) {
   }
 
   try {
-    await runGit(projectRoot, ['add', '.ai-context']);
+    const branchName = await ensureMainBranch(projectRoot);
+    const remoteUrl = (await getRemoteOriginUrl(projectRoot)) || settings.repoUrl;
+
+    if (!remoteUrl) {
+      logMissingRemoteInstructions(logger);
+      return {
+        skipped: true,
+        reason: 'missing_remote'
+      };
+    }
+
+    await runGit(projectRoot, ['add', '-f', '.ai-context']);
 
     const hasChanges = await hasStagedContextChanges(projectRoot);
     if (!hasChanges) {
+      if (logger) {
+        logger.info('No .ai-context changes to sync.');
+      }
+
       return {
         skipped: true,
         reason: 'no_changes'
@@ -92,9 +273,7 @@ async function syncContextToGit(projectRoot, config, logger) {
       const remoteExists = await hasRemote(projectRoot);
 
       if (!remoteExists) {
-        if (logger) {
-          logger.warn('Git sync committed locally, but no remote is configured for push.');
-        }
+        logMissingRemoteInstructions(logger);
 
         return {
           ok: true,
@@ -102,16 +281,21 @@ async function syncContextToGit(projectRoot, config, logger) {
         };
       }
 
-      await runGit(projectRoot, ['push']);
+      await runGit(projectRoot, ['push', '-u', settings.remote || 'origin', branchName]);
     }
+
+    const urls = buildPublicAiUrls(remoteUrl, branchName);
 
     if (logger) {
       logger.info('Synced .ai-context changes to git.');
     }
 
+    logPublicAiEndpoints(logger, urls);
+
     return {
       ok: true,
-      pushed: Boolean(settings.push)
+      pushed: Boolean(settings.push),
+      urls
     };
   } catch (error) {
     if (logger) {
@@ -126,6 +310,10 @@ async function syncContextToGit(projectRoot, config, logger) {
 }
 
 module.exports = {
+  buildPublicAiUrls,
+  ensureGitInitialized,
+  getRemoteOriginUrl,
   isGitRepository,
+  linkGithubRepository,
   syncContextToGit
 };

@@ -2,10 +2,16 @@
 'use strict';
 
 const path = require('path');
+const readline = require('readline/promises');
+const { stdin, stdout } = require('process');
 const { initProject } = require('../core/init');
 const { startWatcher } = require('../core/watcher');
-const { loadRuntimeConfig, updateProjectState } = require('../core/stateManager');
-const { syncContextToGit } = require('../core/gitSync');
+const {
+  loadRuntimeConfig,
+  updateProjectState,
+  updateRuntimeConfig
+} = require('../core/stateManager');
+const { linkGithubRepository, syncContextToGit } = require('../core/gitSync');
 const { startServer } = require('../server/server');
 const { createLogger } = require('../utils/logger');
 
@@ -48,6 +54,34 @@ async function run() {
         }
       );
       logger.info('Manual AI context update completed.');
+      return;
+    }
+
+    if (command === 'link-github') {
+      await initProject(projectRoot, { logger });
+      const repoUrl = process.argv[3] || (await promptForRepoUrl());
+
+      if (!repoUrl) {
+        logger.error('A GitHub repository URL is required.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const nextConfig = await updateRuntimeConfig(projectRoot, {
+        gitSync: {
+          enabled: true,
+          push: true,
+          repoUrl: repoUrl.trim()
+        }
+      });
+      const linkResult = await linkGithubRepository(projectRoot, repoUrl.trim(), logger);
+
+      if (!linkResult.ok) {
+        process.exitCode = 1;
+        return;
+      }
+
+      await syncContextToGit(projectRoot, nextConfig.gitSync, logger);
       return;
     }
 
@@ -99,14 +133,30 @@ function printHelp() {
 
 Usage:
   aibridge init
+  aibridge link-github
   aibridge start
   aibridge update
 
 Commands:
   init    Create .ai-context and initialize AI context files
+  link-github  Connect a GitHub remote and enable public AI sync
   start   Start the watcher and local server on port 3333
   update  Trigger a manual state update
 `);
+}
+
+async function promptForRepoUrl() {
+  const rl = readline.createInterface({
+    input: stdin,
+    output: stdout
+  });
+
+  try {
+    const response = await rl.question('GitHub repository URL: ');
+    return response.trim();
+  } finally {
+    rl.close();
+  }
 }
 
 run();

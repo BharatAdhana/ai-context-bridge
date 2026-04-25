@@ -12,9 +12,12 @@ const DEFAULT_CONFIG = {
   port: 3333,
   debounceMs: 600,
   gitSync: {
-    enabled: false,
+    enabled: true,
     push: true,
-    commitMessage: 'auto: update AI context'
+    commitMessage: 'auto: update AI context',
+    remote: 'origin',
+    branch: 'main',
+    repoUrl: ''
   }
 };
 
@@ -181,6 +184,16 @@ async function loadRuntimeConfig(projectRoot) {
   return deepMerge(DEFAULT_CONFIG, userConfig);
 }
 
+async function updateRuntimeConfig(projectRoot, updates) {
+  const { configFile } = getContextPaths(projectRoot);
+  const currentConfig = await readJsonFile(configFile, {});
+  const mergedCurrentConfig = deepMerge(DEFAULT_CONFIG, currentConfig);
+  const nextConfig = deepMerge(mergedCurrentConfig, updates || {});
+
+  await writeJsonAtomic(configFile, nextConfig);
+  return nextConfig;
+}
+
 async function updateProjectState(projectRoot, changeEvent, options) {
   const settings = Object.assign(
     {
@@ -321,6 +334,7 @@ module.exports = {
   loadRuntimeConfig,
   readJsonFile,
   renderTemplate,
+  updateRuntimeConfig,
   updateProjectState,
   writeJsonAtomic,
   writeTextAtomic
