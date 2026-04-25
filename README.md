@@ -4,6 +4,33 @@
 
 Think of it as Git for AI context.
 
+## Quick Start
+
+```bash
+npx aibridge-context init
+npx aibridge-context start
+```
+
+## Usage
+
+This package exposes a CLI command:
+
+```bash
+aibridge
+```
+
+When using `npx`, always use the package name:
+
+```bash
+npx aibridge-context init
+```
+
+After installing globally, you can use:
+
+```bash
+aibridge init
+```
+
 ## Features
 
 - Zero-config startup for Node.js projects
@@ -22,8 +49,8 @@ npm install
 To use the local CLI in this repository:
 
 ```bash
-npx aibridge init
-npx aibridge start
+npx aibridge-context init
+npx aibridge-context start
 ```
 
 If published to npm, the package exposes the `aibridge` binary.
@@ -114,8 +141,8 @@ When `aibridge start` is running:
 ## Example usage
 
 ```bash
-npx aibridge init
-npx aibridge start
+npx aibridge-context init
+npx aibridge-context start
 ```
 
 Then point your AI tool to:
