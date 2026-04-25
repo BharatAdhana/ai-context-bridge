@@ -1,0 +1,12 @@
+{
+  "port": 3333,
+  "debounceMs": 600,
+  "gitSync": {
+    "enabled": true,
+    "push": true,
+    "commitMessage": "auto: update AI context",
+    "remote": "origin",
+    "branch": "main",
+    "repoUrl": "https://github.com/BharatAdhana/ai-context-bridge.git"
+  }
+}
