@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-This project is tracked by ai-context-bridge so AI tools can reason about the current codebase state with minimal setup.
+This project is tracked by aibridge-context so AI tools can reason about the current codebase state with minimal setup.
 
 ## Stack detection
 

@@ -1,6 +1,6 @@
-# ai-context-bridge
+# aibridge-context
 
-`ai-context-bridge` is a zero-config CLI and Node.js library that turns a project into an AI-readable workspace. It maintains a live `.ai-context/` folder, serves it locally, and can optionally sync context updates through git.
+`aibridge-context` is a zero-config CLI and Node.js library that turns a project into an AI-readable workspace. It maintains a live `.ai-context/` folder, serves it locally, and can optionally sync context updates through git.
 
 Think of it as Git for AI context.
 
@@ -26,7 +26,7 @@ npx ai-context init
 npx ai-context start
 ```
 
-If published to npm, the package exposes both `ai-context` and `ai-context-bridge` binaries.
+If published to npm, the package exposes the `ai-context` binary.
 
 ## Commands
 
@@ -158,7 +158,7 @@ const {
   updateProjectState,
   startServer,
   syncContextToGit
-} = require('ai-context-bridge');
+} = require('aibridge-context');
 ```
 
 ## Development notes

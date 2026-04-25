@@ -95,7 +95,7 @@ async function run() {
 }
 
 function printHelp() {
-  console.log(`ai-context-bridge
+  console.log(`aibridge-context
 
 Usage:
   ai-context init

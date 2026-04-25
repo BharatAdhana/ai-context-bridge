@@ -1,5 +1,5 @@
 {
-  "name": "ai-context-bridge",
+  "name": "aibridge-context",
   "version": "1.0.0",
   "description": "Zero-config CLI and library for generating AI-readable project context, serving it locally, and syncing it with git.",
   "main": "./index.js",
