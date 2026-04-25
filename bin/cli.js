@@ -34,7 +34,12 @@ async function run() {
 
   try {
     if (command === 'init') {
-      await initProject(projectRoot, { logger });
+      await initProject(projectRoot, {
+        logger,
+        requestPublicSyncConsent: true,
+        promptForPublicSyncConsent: () =>
+          promptYesNo('[aibridge] Do you want to enable GitHub sync and public AI access? (y/n) ')
+      });
       return;
     }
 
@@ -59,6 +64,19 @@ async function run() {
 
     if (command === 'link-github') {
       await initProject(projectRoot, { logger });
+      logger.warn('You are about to connect a GitHub repository.');
+      logger.info('This will:');
+      logger.info('* Push .ai-context to GitHub');
+      logger.info('* Make project context publicly accessible');
+      logger.info('* Allow AI systems to read your project state');
+
+      const shouldContinue = await promptYesNo('[aibridge] Continue? (y/n) ');
+
+      if (!shouldContinue) {
+        logger.info('GitHub linking cancelled. Public sync remains unchanged.');
+        return;
+      }
+
       const repoUrl = process.argv[3] || (await promptForRepoUrl());
 
       if (!repoUrl) {
@@ -88,11 +106,23 @@ async function run() {
     if (command === 'start') {
       await initProject(projectRoot, { logger });
       const config = await loadRuntimeConfig(projectRoot);
+      const port = Number(process.env.AI_CONTEXT_PORT || config.port || 3333);
+      logger.info('Watching project for changes...');
       const serverHandle = await startServer({
         projectRoot,
-        port: Number(process.env.AI_CONTEXT_PORT || config.port || 3333),
+        port,
         logger
       });
+      logger.info(`Local server: http://localhost:${port}`);
+
+      if (config.gitSync.enabled) {
+        logger.info('Auto-sync to GitHub is ENABLED');
+        logger.warn('Changes will be publicly available to AI');
+      } else {
+        logger.info('GitHub sync is DISABLED');
+        logger.info('Data is only available locally');
+      }
+
       const watcherHandle = await startWatcher(projectRoot, { logger });
 
       const shutdown = async (signal) => {
@@ -131,17 +161,14 @@ async function run() {
 function printHelp() {
   console.log(`aibridge-context
 
-Usage:
-  aibridge init
-  aibridge link-github
-  aibridge start
-  aibridge update
-
 Commands:
-  init    Create .ai-context and initialize AI context files
-  link-github  Connect a GitHub remote and enable public AI sync
-  start   Start the watcher and local server on port 3333
-  update  Trigger a manual state update
+  init           Initialize AI context (with optional public sync)
+  link-github    Connect GitHub for public AI access
+  start          Start watcher and server
+  update         Manually update context
+
+Description:
+  This tool creates an AI-readable version of your project and can expose it via a public URL for AI tools.
 `);
 }
 
@@ -152,8 +179,26 @@ async function promptForRepoUrl() {
   });
 
   try {
-    const response = await rl.question('GitHub repository URL: ');
+    const response = await rl.question('[aibridge] GitHub repository URL: ');
     return response.trim();
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptYesNo(question) {
+  if (!stdin.isTTY || !stdout.isTTY) {
+    return false;
+  }
+
+  const rl = readline.createInterface({
+    input: stdin,
+    output: stdout
+  });
+
+  try {
+    const response = await rl.question(question);
+    return response.trim().toLowerCase() === 'y';
   } finally {
     rl.close();
   }

@@ -12,7 +12,7 @@ const DEFAULT_CONFIG = {
   port: 3333,
   debounceMs: 600,
   gitSync: {
-    enabled: true,
+    enabled: false,
     push: true,
     commitMessage: 'auto: update AI context',
     remote: 'origin',

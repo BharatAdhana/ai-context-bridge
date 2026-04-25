@@ -18,7 +18,15 @@ const {
 const { ensureGitInitialized } = require('./gitSync');
 
 async function initProject(projectRoot, options) {
-  const settings = Object.assign({ logger: null, force: false }, options);
+  const settings = Object.assign(
+    {
+      logger: null,
+      force: false,
+      requestPublicSyncConsent: false,
+      promptForPublicSyncConsent: null
+    },
+    options
+  );
   const logger = settings.logger;
   const contextDir = await ensureContextDirectory(projectRoot);
   const paths = getContextPaths(projectRoot);
@@ -36,6 +44,7 @@ async function initProject(projectRoot, options) {
   const existingChangelog = await readJsonFile(paths.changelogFile, null);
   const templateState = JSON.parse(stateTemplate);
   const templateChangelog = JSON.parse(changelogTemplate);
+  let enableGitSync = false;
 
   const initialState = Object.assign({}, templateState, existingState || createDefaultState(projectRoot), {
     project: metadata.project,
@@ -62,18 +71,18 @@ async function initProject(projectRoot, options) {
     await writeTextAtomic(paths.contextFile, initialContext);
   }
 
-  await updateRuntimeConfig(
-    projectRoot,
-    existingConfig
-      ? null
-      : {
-          gitSync: {
-            enabled: true,
-            push: true,
-            commitMessage: 'auto: update AI context'
-          }
-        }
-  );
+  if (!existingConfig && settings.requestPublicSyncConsent) {
+    enableGitSync = await requestPublicSyncConsent(
+      logger,
+      settings.promptForPublicSyncConsent
+    );
+  }
+
+  await updateRuntimeConfig(projectRoot, existingConfig ? null : {
+    gitSync: {
+      enabled: enableGitSync
+    }
+  });
 
   await ensureGitInitialized(projectRoot, logger);
 
@@ -85,6 +94,29 @@ async function initProject(projectRoot, options) {
     contextDir,
     metadata
   };
+}
+
+async function requestPublicSyncConsent(logger, promptForPublicSyncConsent) {
+  if (logger) {
+    logger.warn('This tool can make parts of your project publicly accessible for AI tools.');
+    logger.info('It will:');
+    logger.info('* Track project changes');
+    logger.info('* Generate AI-readable context');
+    logger.info('* Optionally sync to GitHub');
+    logger.info('* Create a PUBLIC URL accessible by AI systems');
+    logger.warn('WARNING:');
+    logger.warn('Anyone with the URL can read this data.');
+  }
+
+  if (typeof promptForPublicSyncConsent !== 'function') {
+    if (logger) {
+      logger.info('GitHub sync will remain disabled until you explicitly enable it.');
+    }
+
+    return false;
+  }
+
+  return Boolean(await promptForPublicSyncConsent());
 }
 
 async function fileExists(filePath) {

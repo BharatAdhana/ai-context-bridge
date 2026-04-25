@@ -74,6 +74,13 @@ async function hasStagedContextChanges(projectRoot) {
   }
 }
 
+function formatGitError(error) {
+  const stderr = typeof error.stderr === 'string' ? error.stderr.trim() : '';
+  const stdout = typeof error.stdout === 'string' ? error.stdout.trim() : '';
+  const message = stderr || stdout || error.message || 'Unknown git error.';
+  return message.split('\n')[0];
+}
+
 async function ensureGitInitialized(projectRoot, logger) {
   const repositoryReady = await isGitRepository(projectRoot);
 
@@ -93,6 +100,7 @@ async function ensureGitInitialized(projectRoot, logger) {
         throw error;
       }
     }
+
     await ensureMainBranch(projectRoot);
 
     if (logger) {
@@ -104,7 +112,7 @@ async function ensureGitInitialized(projectRoot, logger) {
     };
   } catch (error) {
     if (logger) {
-      logger.warn(`Git initialization failed gracefully: ${error.message}`);
+      logger.warn(`Git initialization failed gracefully: ${formatGitError(error)}`);
     }
 
     return {
@@ -156,7 +164,7 @@ function logMissingRemoteInstructions(logger) {
     return;
   }
 
-  logger.warn('No GitHub remote detected.');
+  logger.warn('GitHub remote not found.');
   logger.info('Run:');
   logger.info('git remote add origin <repo-url>');
   logger.info('git push -u origin main');
@@ -167,10 +175,15 @@ function logPublicAiEndpoints(logger, urls) {
     return;
   }
 
-  logger.info('Public AI endpoint:');
+  logger.info('\u2705 AI Context Synced Successfully');
+  logger.info('\u{1F310} Public AI Endpoint:');
   logger.info(urls.stateUrl);
-  logger.info('Use this with AI:');
+  logger.info('\u{1F9E0} AI Instructions Endpoint:');
   logger.info(urls.brainUrl);
+  logger.warn('\u26A0\uFE0F IMPORTANT:');
+  logger.warn('This data is PUBLIC. Anyone with this link can access it.');
+  logger.info('\u{1F916} To use with AI:');
+  logger.info('"Use this URL as the source of truth for my project."');
 }
 
 async function linkGithubRepository(projectRoot, repoUrl, logger) {
@@ -189,16 +202,13 @@ async function linkGithubRepository(projectRoot, repoUrl, logger) {
     await ensureMainBranch(projectRoot);
     await runGit(projectRoot, ['push', '-u', 'origin', 'main']);
 
-    const urls = buildPublicAiUrls(normalizedRepoUrl, 'main');
-    logPublicAiEndpoints(logger, urls);
-
     return {
       ok: true,
-      urls
+      urls: buildPublicAiUrls(normalizedRepoUrl, 'main')
     };
   } catch (error) {
     if (logger) {
-      logger.warn(`GitHub link failed gracefully: ${error.message}`);
+      logger.warn(`GitHub link failed gracefully: ${formatGitError(error)}`);
     }
 
     return {
@@ -211,7 +221,7 @@ async function linkGithubRepository(projectRoot, repoUrl, logger) {
 async function syncContextToGit(projectRoot, config, logger) {
   const settings = Object.assign(
     {
-      enabled: true,
+      enabled: false,
       push: true,
       commitMessage: 'auto: update AI context',
       remote: 'origin',
@@ -285,11 +295,6 @@ async function syncContextToGit(projectRoot, config, logger) {
     }
 
     const urls = buildPublicAiUrls(remoteUrl, branchName);
-
-    if (logger) {
-      logger.info('Synced .ai-context changes to git.');
-    }
-
     logPublicAiEndpoints(logger, urls);
 
     return {
@@ -299,7 +304,7 @@ async function syncContextToGit(projectRoot, config, logger) {
     };
   } catch (error) {
     if (logger) {
-      logger.warn(`Git sync failed gracefully: ${error.message}`);
+      logger.warn(`Git sync failed gracefully: ${formatGitError(error)}`);
     }
 
     return {

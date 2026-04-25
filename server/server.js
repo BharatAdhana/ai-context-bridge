@@ -22,10 +22,6 @@ async function startServer(options) {
     instance.on('error', reject);
   });
 
-  if (settings.logger) {
-    settings.logger.info(`AI context server is running on http://localhost:${settings.port}`);
-  }
-
   return {
     app,
     server,

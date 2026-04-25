@@ -4,6 +4,12 @@
 
 Think of it as Git for AI context.
 
+## &#9888;&#65039; Public AI Access Warning
+
+When GitHub sync is enabled, your project context becomes publicly accessible via a URL.
+
+Do NOT use this tool with sensitive data.
+
 ## Quick Start
 
 ```bash
@@ -11,6 +17,14 @@ npx aibridge-context init
 npx aibridge-context link-github
 npx aibridge-context start
 ```
+
+## How It Works
+
+1. Tracks project changes
+2. Generates structured AI context
+3. Syncs to GitHub (optional)
+4. Creates a public URL
+5. AI tools read this URL for context
 
 ## Usage
 
@@ -60,7 +74,7 @@ If published to npm, the package exposes the `aibridge` binary.
 
 `ai-context` is supported as a legacy alias.
 
-## Use With AI
+## Using With AI
 
 After enabling GitHub sync, use:
 
@@ -69,6 +83,13 @@ https://raw.githubusercontent.com/<user>/<repo>/main/.ai-context/state.json
 ```
 
 This URL always returns the latest project state.
+
+Paste this into any AI:
+
+```text
+Use this as source of truth:
+https://raw.githubusercontent.com/<user>/<repo>/main/.ai-context/state.json
+```
 
 You can also share:
 
@@ -155,7 +176,10 @@ Default configuration:
   "gitSync": {
     "enabled": false,
     "push": true,
-    "commitMessage": "auto: update AI context"
+    "commitMessage": "auto: update AI context",
+    "remote": "origin",
+    "branch": "main",
+    "repoUrl": ""
   }
 }
 ```
