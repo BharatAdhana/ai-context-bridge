@@ -14,7 +14,7 @@ function createLogger(options) {
   }
 
   function format(level, message) {
-    return `[ai-context] ${new Date().toISOString()} ${level.toUpperCase()} ${message}`;
+    return `[aibridge] ${new Date().toISOString()} ${level.toUpperCase()} ${message}`;
   }
 
   return {
