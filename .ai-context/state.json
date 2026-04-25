@@ -1,8 +1,8 @@
 {
   "project": "aibridge-context",
-  "version": "1.3.0",
-  "last_updated": "2026-04-25T15:49:03.759Z",
-  "ai_summary": "AI-powered Node.js CLI that tracks meaningful project evolution, generates structured AI-readable context, serves project context locally through Express, can publish public AI-readable context through optional GitHub sync.",
+  "version": "1.4.0",
+  "last_updated": "2026-04-25T16:03:30.337Z",
+  "ai_summary": "CLI tool that turns meaningful project activity into AI-readable context and enables public AI collaboration through GitHub-synced context endpoints.",
   "tech_stack": {
     "language": "Node.js",
     "framework": "Express",
@@ -12,22 +12,23 @@
   "current_stage": "Production-ready",
   "recent_updates": [
     {
-      "title": "Updated backend routes",
+      "title": "Improved AI context delivery service",
       "type": "improvement",
-      "impact": "Improves local AI context delivery."
+      "impact": "Improves how AI tools consume project context through local endpoints."
     }
   ],
   "key_features": [
-    "CLI commands for initializing, linking, starting, and updating AI context",
-    "Noise-filtered watcher that turns file changes into meaningful project updates",
-    "Local Express server for AI-readable context endpoints",
-    "Optional GitHub sync for publishing public AI-readable context",
-    "Intelligent state engine that summarizes project evolution for AI tools"
+    "Project intelligence engine that turns development activity into AI-readable state",
+    "Public GitHub sync for AI-readable project context",
+    "Local server for AI-readable project context endpoints",
+    "Meaningful change tracking that filters noise from project activity",
+    "CLI workflow for initializing, updating, and linking AI context",
+    "Guided setup flow for safe AI context initialization"
   ],
   "known_issues": [
     "No automated test suite is detected yet."
   ],
   "next_steps": [
-    "Add automated tests for the state engine, watcher, and GitHub sync flows."
+    "Add automated tests for the intelligence engine, watcher, and GitHub sync workflow."
   ]
 }

@@ -5,10 +5,80 @@ const fsp = require('fs/promises');
 const path = require('path');
 
 const CONTEXT_DIR_NAME = '.ai-context';
-const MAX_RECENT_UPDATES = 8;
+const MAX_RECENT_UPDATES = 5;
 const MAX_CHANGELOG_ENTRIES = 50;
+const MAX_KEY_FEATURES = 6;
 const IMPORTANT_DIRECTORIES = ['core/', 'server/', 'bin/'];
 const IMPORTANT_EXTENSIONS = new Set(['.js', '.ts', '.py']);
+const LOW_VALUE_FEATURE_KEYS = new Set([
+  'documentation',
+  'package_configuration',
+  'context_templates',
+  'project_workflow'
+]);
+
+const FEATURE_CATALOG = {
+  cli_workflow: {
+    name: 'CLI workflow for initializing, updating, and linking AI context',
+    subject: 'CLI workflow',
+    projectType: 'CLI tool'
+  },
+  github_sync: {
+    name: 'Public GitHub sync for AI-readable project context',
+    subject: 'GitHub sync system',
+    projectType: 'CLI tool'
+  },
+  project_intelligence: {
+    name: 'Project intelligence engine that turns development activity into AI-readable state',
+    subject: 'project intelligence engine',
+    projectType: 'project intelligence engine'
+  },
+  change_tracking: {
+    name: 'Meaningful change tracking that filters noise from project activity',
+    subject: 'change tracking engine',
+    projectType: 'change tracking engine'
+  },
+  local_context_server: {
+    name: 'Local server for AI-readable project context endpoints',
+    subject: 'AI context delivery service',
+    projectType: 'context delivery service'
+  },
+  context_delivery_system: {
+    name: 'Unified context delivery system connecting project intelligence and serving layers',
+    subject: 'AI context delivery system',
+    projectType: 'AI context system'
+  },
+  cli_orchestration: {
+    name: 'Command workflow that connects project intelligence with developer actions',
+    subject: 'CLI workflow',
+    projectType: 'CLI tool'
+  },
+  project_setup: {
+    name: 'Guided setup flow for safe AI context initialization',
+    subject: 'project setup flow',
+    projectType: 'CLI tool'
+  },
+  documentation: {
+    name: 'Developer guidance for adopting the AI context workflow',
+    subject: 'developer guidance',
+    projectType: 'project'
+  },
+  package_configuration: {
+    name: 'Package configuration for distributing the AI context CLI',
+    subject: 'package configuration',
+    projectType: 'package'
+  },
+  context_templates: {
+    name: 'Generated templates for bootstrapping AI-readable project context',
+    subject: 'generated AI context templates',
+    projectType: 'template set'
+  },
+  project_workflow: {
+    name: 'Core project workflow for maintaining AI-readable project state',
+    subject: 'project workflow',
+    projectType: 'project'
+  }
+};
 
 const DEFAULT_CONFIG = {
   port: 3333,
@@ -237,24 +307,21 @@ async function writeTextAtomic(filePath, content) {
 
 function createDefaultState(projectRoot) {
   const metadata = detectProjectMetadata(projectRoot);
-  const keyFeatures = deriveKeyFeatures(projectRoot);
-  const knownIssues = deriveKnownIssues(projectRoot, metadata.techStack);
-  const currentStage = determineCurrentStage(keyFeatures);
   const state = {
     project: metadata.project,
     version: metadata.version,
     last_updated: new Date(0).toISOString(),
     ai_summary: '',
     tech_stack: metadata.techStack,
-    current_stage: currentStage,
+    current_stage: 'Early development',
     recent_updates: [],
-    key_features: keyFeatures,
-    known_issues: knownIssues,
+    key_features: [],
+    known_issues: deriveKnownIssues(projectRoot, metadata.techStack, []),
     next_steps: []
   };
 
-  state.ai_summary = generateAiSummary(state);
-  state.next_steps = generateNextSteps(state);
+  state.ai_summary = generateAiSummary(state, []);
+  state.next_steps = generateNextSteps(state, []);
 
   return state;
 }
@@ -310,40 +377,39 @@ async function updateProjectState(projectRoot, changeEvent, options) {
   const meaningfulEvents = collapseEventsByFile(
     validEvents.filter((event) => isMeaningfulEvent(event))
   );
-  const interpretedEvents = meaningfulEvents
-    .map((event) => interpretChange(event))
-    .filter(Boolean);
-  const previousRecentUpdates = normalizeStoredUpdates(existingState.recent_updates);
+  const groupedUpdates = groupEventsByIntent(meaningfulEvents);
+  const capabilityHistory = buildProjectCapabilityHistory(projectRoot);
   const previousHistoryEntries = normalizeStoredHistoryEntries(existingChangelog.entries);
-  const recentUpdates = dedupeRecentUpdates(
-    interpretedEvents.map(toStateUpdate).concat(previousRecentUpdates)
-  ).slice(0, MAX_RECENT_UPDATES);
   const historyEntries = dedupeHistoryEntries(
-    interpretedEvents.concat(previousHistoryEntries)
+    groupedUpdates.concat(previousHistoryEntries, capabilityHistory)
   ).slice(0, MAX_CHANGELOG_ENTRIES);
-  const keyFeatures = deriveKeyFeatures(projectRoot);
-  const knownIssues = deriveKnownIssues(projectRoot, metadata.techStack);
+  const recentUpdates = historyEntries
+    .filter((entry) => entry.source !== 'project_snapshot')
+    .slice(0, MAX_RECENT_UPDATES)
+    .map(toStateUpdate);
+  const keyFeatures = promoteFeatures(historyEntries);
+  const knownIssues = deriveKnownIssues(projectRoot, metadata.techStack, keyFeatures);
   const nextState = {
     project: metadata.project,
     version: metadata.version,
     last_updated: timestamp,
     ai_summary: '',
     tech_stack: metadata.techStack,
-    current_stage: determineCurrentStage(keyFeatures),
+    current_stage: determineCurrentStage(keyFeatures, historyEntries),
     recent_updates: recentUpdates,
     key_features: keyFeatures,
     known_issues: knownIssues,
     next_steps: []
   };
 
-  nextState.ai_summary = generateAiSummary(nextState);
-  nextState.next_steps = generateNextSteps(nextState);
+  nextState.ai_summary = generateAiSummary(nextState, historyEntries);
+  nextState.next_steps = generateNextSteps(nextState, historyEntries);
 
   await writeJsonAtomic(contextPaths.stateFile, nextState);
   await writeJsonAtomic(contextPaths.changelogFile, { entries: historyEntries });
 
   if (logger) {
-    logger.debug(`Updated AI context with ${interpretedEvents.length} meaningful change(s).`);
+    logger.debug(`Updated AI context with ${groupedUpdates.length} grouped project intent(s).`);
   }
 
   if (typeof settings.syncCallback === 'function') {
@@ -460,22 +526,6 @@ function collapseEventsByFile(events) {
   return Array.from(collapsedEvents.values());
 }
 
-function interpretChange(event) {
-  const filePath = normalizeProjectPath(event.file);
-  const area = classifyChangeArea(filePath);
-  const subject = describeChangeSubject(filePath, area);
-  const type = mapActionToType(event.action);
-  const title = `${mapActionToVerb(event.action)} ${subject}`;
-
-  return {
-    timestamp: event.timestamp || new Date().toISOString(),
-    file: filePath,
-    title,
-    type,
-    impact: describeImpact(area, subject, event.action)
-  };
-}
-
 function classifyChangeArea(filePath) {
   const lowerPath = filePath.toLowerCase();
 
@@ -496,7 +546,7 @@ function classifyChangeArea(filePath) {
   }
 
   if (lowerPath.startsWith('bin/')) {
-    return 'CLI';
+    return 'cli';
   }
 
   if (lowerPath.startsWith('templates/')) {
@@ -506,135 +556,335 @@ function classifyChangeArea(filePath) {
   return 'project';
 }
 
-function describeChangeSubject(filePath, area) {
+function describeRootDirectory(filePath) {
+  const normalizedPath = normalizeProjectPath(filePath);
+  const segments = normalizedPath.split('/');
+
+  if (segments.length === 1) {
+    return segments[0] || 'project';
+  }
+
+  return segments[0] || 'project';
+}
+
+function detectIntentTheme(filePath, area) {
   const lowerPath = filePath.toLowerCase();
-  const baseName = path.basename(filePath);
 
   if (lowerPath === 'package.json') {
-    return 'dependency configuration';
+    return 'package_configuration';
   }
 
   if (lowerPath === 'readme.md') {
     return 'documentation';
   }
 
-  if (lowerPath === 'core/gitsync.js') {
-    return 'GitHub sync logic';
+  if (lowerPath.startsWith('bin/')) {
+    return 'cli_workflow';
   }
 
-  if (lowerPath === 'core/statemanager.js') {
-    return 'state intelligence logic';
+  if (lowerPath.startsWith('server/')) {
+    return 'local_context_server';
   }
 
-  if (lowerPath === 'core/watcher.js') {
-    return 'watcher logic';
+  if (lowerPath.startsWith('templates/')) {
+    return 'context_templates';
   }
 
-  if (lowerPath === 'core/init.js') {
-    return 'initialization flow';
+  if (lowerPath.includes('gitsync') || lowerPath.includes('sync')) {
+    return 'github_sync';
   }
 
-  if (lowerPath === 'server/server.js') {
-    return 'backend server';
+  if (lowerPath.includes('watcher') || lowerPath.includes('watch')) {
+    return 'change_tracking';
   }
 
-  if (lowerPath === 'server/routes.js') {
-    return 'backend routes';
+  if (lowerPath.includes('state') || lowerPath.includes('context')) {
+    return 'project_intelligence';
   }
 
-  if (lowerPath === 'bin/cli.js') {
-    return 'CLI workflow';
-  }
-
-  if (area === 'templates') {
-    return `${humanizeFileName(baseName)} template`;
+  if (lowerPath.includes('init')) {
+    return 'project_setup';
   }
 
   if (area === 'logic') {
-    return `${humanizeFileName(baseName)} logic`;
+    return 'project_intelligence';
   }
 
-  if (area === 'backend') {
-    return `${humanizeFileName(baseName)} backend`;
-  }
-
-  if (area === 'CLI') {
-    return 'CLI workflow';
-  }
-
-  return humanizeFileName(baseName);
+  return 'project_workflow';
 }
 
-function humanizeFileName(fileName) {
-  return fileName
-    .replace(path.extname(fileName), '')
-    .replace(/[-_.]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+function createEventDescriptor(event) {
+  const normalizedPath = normalizeProjectPath(event.file);
+
+  return {
+    timestamp: event.timestamp || new Date().toISOString(),
+    action: event.action || 'change',
+    file: normalizedPath,
+    area: classifyChangeArea(normalizedPath),
+    rootDirectory: describeRootDirectory(normalizedPath),
+    theme: detectIntentTheme(normalizedPath, classifyChangeArea(normalizedPath))
+  };
 }
 
-function mapActionToType(action) {
-  if (action === 'add') {
+function groupEventsByIntent(events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return [];
+  }
+
+  const groupedByArea = new Map();
+
+  for (const event of events) {
+    const descriptor = createEventDescriptor(event);
+    const groupKey = `${descriptor.area}:${descriptor.rootDirectory}`;
+
+    if (!groupedByArea.has(groupKey)) {
+      groupedByArea.set(groupKey, {
+        area: descriptor.area,
+        rootDirectory: descriptor.rootDirectory,
+        events: []
+      });
+    }
+
+    groupedByArea.get(groupKey).events.push(descriptor);
+  }
+
+  const mergedGroups = mergeCrossAreaIntentGroups(Array.from(groupedByArea.values()));
+
+  return mergedGroups
+    .map((group) => interpretIntentGroup(group))
+    .filter(Boolean)
+    .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp));
+}
+
+function buildProjectCapabilityHistory(projectRoot) {
+  const snapshotTimestamp = new Date(0).toISOString();
+  const projectFiles = scanProjectFiles(projectRoot, 2).filter((filePath) => scoreEvent(filePath) >= 2);
+
+  if (projectFiles.length === 0) {
+    return [];
+  }
+
+  const capabilityBuckets = new Map();
+
+  for (const filePath of projectFiles) {
+    const area = classifyChangeArea(filePath);
+    const featureKey = detectIntentTheme(filePath, area);
+
+    if (!capabilityBuckets.has(featureKey)) {
+      capabilityBuckets.set(featureKey, []);
+    }
+
+    capabilityBuckets.get(featureKey).push(filePath);
+  }
+
+  return Array.from(capabilityBuckets.entries())
+    .map(([featureKey, files]) => createCapabilitySnapshotEntry(featureKey, files.length, snapshotTimestamp))
+    .filter(Boolean);
+}
+
+function mergeCrossAreaIntentGroups(groups) {
+  if (groups.length < 2) {
+    return groups;
+  }
+
+  const logicGroup = groups.find((group) => group.area === 'logic');
+  const backendGroup = groups.find((group) => group.area === 'backend');
+  const cliGroup = groups.find((group) => group.area === 'cli');
+
+  if (logicGroup && backendGroup && groups.length <= 3) {
+    return mergeSelectedGroups(groups, [logicGroup, backendGroup], 'system');
+  }
+
+  if (logicGroup && cliGroup && groups.length <= 3) {
+    return mergeSelectedGroups(groups, [logicGroup, cliGroup], 'cli_system');
+  }
+
+  return groups;
+}
+
+function mergeSelectedGroups(groups, groupsToMerge, mergedArea) {
+  const mergeSet = new Set(groupsToMerge);
+  const remainingGroups = groups.filter((group) => !mergeSet.has(group));
+  const mergedGroup = {
+    area: mergedArea,
+    rootDirectory: mergedArea,
+    events: groupsToMerge.flatMap((group) => group.events)
+  };
+
+  remainingGroups.push(mergedGroup);
+  return remainingGroups;
+}
+
+function interpretIntentGroup(group) {
+  if (!group || !Array.isArray(group.events) || group.events.length === 0) {
+    return null;
+  }
+
+  const latestTimestamp = group.events.reduce((latest, event) => {
+    return new Date(event.timestamp) > new Date(latest) ? event.timestamp : latest;
+  }, group.events[0].timestamp);
+  const featureKey = determineFeatureKey(group);
+  const featureMeta = getFeatureMeta(featureKey);
+  const type = determineGroupedUpdateType(group);
+  const subject = describeIntentSubject(group, featureMeta.subject);
+
+  return {
+    timestamp: latestTimestamp,
+    scope: describeIntentScope(group),
+    title: buildIntentTitle(type, subject),
+    type,
+    impact: describeIntentImpact(type, featureKey, subject),
+    feature_key: featureKey,
+    feature_name: featureMeta.name,
+    source: 'event'
+  };
+}
+
+function determineFeatureKey(group) {
+  const areas = new Set(group.events.map((event) => event.area));
+
+  if (group.area === 'system' || (areas.has('logic') && areas.has('backend'))) {
+    return 'context_delivery_system';
+  }
+
+  if (group.area === 'cli_system' || (areas.has('logic') && areas.has('cli'))) {
+    return 'cli_orchestration';
+  }
+
+  const themeCounts = new Map();
+
+  for (const event of group.events) {
+    themeCounts.set(event.theme, (themeCounts.get(event.theme) || 0) + 1);
+  }
+
+  return Array.from(themeCounts.entries()).sort((left, right) => {
+    if (right[1] !== left[1]) {
+      return right[1] - left[1];
+    }
+
+    return getFeaturePriority(right[0]) - getFeaturePriority(left[0]);
+  })[0][0];
+}
+
+function getFeatureMeta(featureKey) {
+  return FEATURE_CATALOG[featureKey] || FEATURE_CATALOG.project_workflow;
+}
+
+function getFeaturePriority(featureKey) {
+  const priorities = {
+    project_intelligence: 7,
+    github_sync: 6,
+    local_context_server: 5,
+    change_tracking: 4,
+    cli_workflow: 3,
+    project_setup: 2,
+    project_workflow: 1
+  };
+
+  return priorities[featureKey] || 0;
+}
+
+function determineGroupedUpdateType(group) {
+  const actions = new Set(group.events.map((event) => event.action));
+  const fileCount = group.events.length;
+
+  if (actions.has('add')) {
     return 'feature';
   }
 
-  if (action === 'delete') {
-    return 'removal';
+  if (hasFixSignals(group.events)) {
+    return 'fix';
+  }
+
+  if (fileCount > 2 || group.area === 'system' || group.area === 'cli_system') {
+    return 'refactor';
   }
 
   return 'improvement';
 }
 
-function mapActionToVerb(action) {
-  if (action === 'add') {
-    return 'Added';
-  }
-
-  if (action === 'delete') {
-    return 'Removed';
-  }
-
-  return 'Updated';
+function hasFixSignals(events) {
+  return events.some((event) =>
+    /(fix|bug|error|guard|validate|sanitize|safe|stabilize)/i.test(event.file)
+  );
 }
 
-function describeImpact(area, subject, action) {
-  if (action === 'delete') {
-    return `Removes ${subject.toLowerCase()} from the project workflow.`;
+function describeIntentSubject(group, fallbackSubject) {
+  const areas = new Set(group.events.map((event) => event.area));
+
+  if (group.area === 'system' || (areas.has('logic') && areas.has('backend'))) {
+    return 'AI context delivery system';
   }
 
-  if (subject === 'GitHub sync logic') {
-    return 'Improves reliability of context syncing.';
+  if (group.area === 'cli_system' || (areas.has('logic') && areas.has('cli'))) {
+    return 'CLI workflow';
   }
 
-  if (subject === 'state intelligence logic') {
-    return 'Improves the quality of AI-readable project state.';
+  if (group.area === 'backend' && group.events.length > 1) {
+    return 'AI context delivery service';
   }
 
-  if (subject === 'watcher logic') {
-    return 'Improves how meaningful project changes are detected.';
+  return fallbackSubject || 'project workflow';
+}
+
+function describeIntentScope(group) {
+  if (group.area === 'system') {
+    return 'system';
   }
 
-  if (area === 'backend') {
-    return 'Improves local AI context delivery.';
+  if (group.area === 'cli_system') {
+    return 'CLI';
   }
 
-  if (area === 'CLI') {
-    return 'Improves command-line workflow clarity and usability.';
+  return group.area;
+}
+
+function buildIntentTitle(type, subject) {
+  const verbs = {
+    feature: 'Expanded',
+    improvement: 'Improved',
+    refactor: 'Refactored',
+    fix: 'Stabilized'
+  };
+
+  return `${verbs[type] || 'Improved'} ${subject}`;
+}
+
+function describeIntentImpact(type, featureKey, subject) {
+  const impactByFeature = {
+    cli_workflow: 'Improves how developers initialize and manage AI context from the command line.',
+    github_sync: 'Improves reliability of publishing AI-readable project context to GitHub.',
+    project_intelligence: 'Improves how project progress is summarized for AI systems.',
+    change_tracking: 'Improves how meaningful project evolution is detected without noise.',
+    local_context_server: 'Improves how AI tools consume project context through local endpoints.',
+    context_delivery_system: 'Improves reliability and structure of the end-to-end AI context delivery system.',
+    cli_orchestration: 'Improves how CLI actions drive the project intelligence workflow.',
+    project_setup: 'Improves first-run setup and configuration clarity for teams adopting AI context.',
+    documentation: 'Improves onboarding and usage clarity for developers and AI collaborators.',
+    package_configuration: 'Improves package installation and distribution behavior.',
+    context_templates: 'Improves the default AI context generated for new projects.',
+    project_workflow: 'Improves the overall project workflow for maintaining AI-readable context.'
+  };
+
+  if (type === 'feature') {
+    return impactByFeature[featureKey]
+      .replace(/^Improves /, 'Adds ')
+      .replace(/^Improves how /, 'Adds ')
+      .replace(/^Improves reliability of /, 'Adds ')
+      .replace(/^Improves first-run setup and configuration clarity for teams adopting /, 'Adds ')
+      .replace(/^Improves the default AI context generated for /, 'Adds ')
+      .replace(/^Improves the overall project workflow for maintaining /, 'Adds ');
   }
 
-  if (area === 'documentation') {
-    return 'Improves onboarding and usage clarity.';
+  if (type === 'fix') {
+    return `Resolves reliability issues in the ${subject.toLowerCase()}.`;
   }
 
-  if (area === 'dependencies') {
-    return 'Updates package behavior and dependency management.';
-  }
+  return impactByFeature[featureKey] || 'Improves the overall project workflow for maintaining AI-readable context.';
+}
 
-  if (area === 'templates') {
-    return 'Improves generated AI context defaults.';
-  }
-
-  return 'Improves core project intelligence and automation.';
+function interpretChange(event) {
+  return groupEventsByIntent([event])[0] || null;
 }
 
 function normalizeStoredUpdates(updates) {
@@ -642,11 +892,7 @@ function normalizeStoredUpdates(updates) {
     return [];
   }
 
-  return dedupeRecentUpdates(
-    updates
-      .map((update) => normalizeStoredUpdate(update))
-      .filter(Boolean)
-  );
+  return dedupeRecentUpdates(updates.map((update) => normalizeStoredUpdate(update)).filter(Boolean));
 }
 
 function normalizeStoredUpdate(update) {
@@ -657,7 +903,7 @@ function normalizeStoredUpdate(update) {
   if (update.title && update.type && update.impact) {
     return {
       title: update.title,
-      type: update.type,
+      type: normalizeUpdateType(update.type),
       impact: update.impact
     };
   }
@@ -687,12 +933,20 @@ function normalizeStoredHistoryEntry(entry) {
   }
 
   if (entry.title && entry.type && entry.impact) {
+    const inferredFeature = inferFeatureFromEntry(entry);
+    const featureKey = entry.feature_key || inferredFeature.featureKey;
+    const normalizedType = normalizeUpdateType(entry.type);
+    const subject = describeCanonicalSubject(featureKey);
+
     return {
       timestamp: entry.timestamp || new Date(0).toISOString(),
-      file: normalizeProjectPath(entry.file || ''),
-      title: entry.title,
-      type: entry.type,
-      impact: entry.impact
+      scope: entry.scope || inferredFeature.scope,
+      title: buildIntentTitle(normalizedType, subject),
+      type: normalizedType,
+      impact: describeIntentImpact(normalizedType, featureKey, subject),
+      feature_key: featureKey,
+      feature_name: entry.feature_name || getFeatureMeta(featureKey).name,
+      source: entry.source || 'history'
     };
   }
 
@@ -703,10 +957,97 @@ function normalizeStoredHistoryEntry(entry) {
   return null;
 }
 
+function inferFeatureFromEntry(entry) {
+  const combinedText = `${entry.title || ''} ${entry.impact || ''}`.toLowerCase();
+
+  if (combinedText.includes('github') || combinedText.includes('sync')) {
+    return {
+      featureKey: 'github_sync',
+      featureName: getFeatureMeta('github_sync').name,
+      scope: 'logic'
+    };
+  }
+
+  if (combinedText.includes('state') || combinedText.includes('intelligence')) {
+    return {
+      featureKey: 'project_intelligence',
+      featureName: getFeatureMeta('project_intelligence').name,
+      scope: 'logic'
+    };
+  }
+
+  if (combinedText.includes('watch') || combinedText.includes('change tracking')) {
+    return {
+      featureKey: 'change_tracking',
+      featureName: getFeatureMeta('change_tracking').name,
+      scope: 'logic'
+    };
+  }
+
+  if (
+    combinedText.includes('server') ||
+    combinedText.includes('backend') ||
+    combinedText.includes('endpoint') ||
+    combinedText.includes('delivery')
+  ) {
+    return {
+      featureKey: 'local_context_server',
+      featureName: getFeatureMeta('local_context_server').name,
+      scope: 'backend'
+    };
+  }
+
+  if (combinedText.includes('cli') || combinedText.includes('command line')) {
+    return {
+      featureKey: 'cli_workflow',
+      featureName: getFeatureMeta('cli_workflow').name,
+      scope: 'cli'
+    };
+  }
+
+  if (combinedText.includes('documentation') || combinedText.includes('onboarding')) {
+    return {
+      featureKey: 'documentation',
+      featureName: getFeatureMeta('documentation').name,
+      scope: 'documentation'
+    };
+  }
+
+  if (combinedText.includes('package') || combinedText.includes('dependency')) {
+    return {
+      featureKey: 'package_configuration',
+      featureName: getFeatureMeta('package_configuration').name,
+      scope: 'dependencies'
+    };
+  }
+
+  return {
+    featureKey: 'project_workflow',
+    featureName: getFeatureMeta('project_workflow').name,
+    scope: 'project'
+  };
+}
+
+function normalizeUpdateType(type) {
+  if (type === 'removal') {
+    return 'refactor';
+  }
+
+  if (type === 'feature' || type === 'improvement' || type === 'refactor' || type === 'fix') {
+    return type;
+  }
+
+  return 'improvement';
+}
+
 function toStateUpdate(update) {
+  if (!update) {
+    return null;
+  }
+
   return {
     title: update.title,
-    type: update.type,
+    type: normalizeUpdateType(update.type),
     impact: update.impact
   };
 }
@@ -715,7 +1056,7 @@ function dedupeRecentUpdates(updates) {
   const seenUpdates = new Set();
   const result = [];
 
-  for (const update of updates) {
+  for (const update of updates.filter(Boolean)) {
     const key = `${update.title}::${update.type}::${update.impact}`;
 
     if (seenUpdates.has(key)) {
@@ -733,8 +1074,8 @@ function dedupeHistoryEntries(entries) {
   const seenEntries = new Set();
   const result = [];
 
-  for (const entry of entries) {
-    const key = `${entry.title}::${entry.type}::${entry.file}`;
+  for (const entry of entries.filter(Boolean)) {
+    const key = `${entry.title}::${entry.type}::${entry.feature_key}`;
 
     if (seenEntries.has(key)) {
       continue;
@@ -744,39 +1085,158 @@ function dedupeHistoryEntries(entries) {
     result.push(entry);
   }
 
-  return result;
+  return result.sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp));
 }
 
-function deriveKeyFeatures(projectRoot) {
-  const features = [];
-
-  if (fs.existsSync(path.join(projectRoot, 'bin', 'cli.js'))) {
-    features.push('CLI commands for initializing, linking, starting, and updating AI context');
+function promoteFeatures(history) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return [];
   }
 
-  if (fs.existsSync(path.join(projectRoot, 'core', 'watcher.js'))) {
-    features.push('Noise-filtered watcher that turns file changes into meaningful project updates');
+  const featureStats = new Map();
+
+  for (const entry of history) {
+    const featureKey = entry.feature_key || inferFeatureFromEntry(entry).featureKey;
+    const featureMeta = getFeatureMeta(featureKey);
+    const existing = featureStats.get(featureKey) || {
+      featureKey,
+      featureName: featureMeta.name,
+      count: 0,
+      score: 0,
+      lastTimestamp: new Date(0).toISOString()
+    };
+
+    existing.count += 1;
+    existing.score += scoreFeatureEntry(entry);
+    if (new Date(entry.timestamp) > new Date(existing.lastTimestamp)) {
+      existing.lastTimestamp = entry.timestamp;
+    }
+
+    featureStats.set(featureKey, existing);
   }
 
+  const rankedFeatures = Array.from(featureStats.values()).sort((left, right) => {
+    if (right.count !== left.count) {
+      return right.count - left.count;
+    }
+
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+
+    if (getFeaturePriority(right.featureKey) !== getFeaturePriority(left.featureKey)) {
+      return getFeaturePriority(right.featureKey) - getFeaturePriority(left.featureKey);
+    }
+
+    return new Date(right.lastTimestamp) - new Date(left.lastTimestamp);
+  });
+
+  const promoted = [];
+  const seenFeatureNames = new Set();
+
+  for (const feature of rankedFeatures.filter((item) => item.count >= 3)) {
+    if (LOW_VALUE_FEATURE_KEYS.has(feature.featureKey)) {
+      continue;
+    }
+
+    promoted.push(feature.featureName);
+    seenFeatureNames.add(feature.featureName);
+  }
+
+  for (const feature of rankedFeatures) {
+    if (promoted.length >= MAX_KEY_FEATURES) {
+      break;
+    }
+
+    if (LOW_VALUE_FEATURE_KEYS.has(feature.featureKey)) {
+      continue;
+    }
+
+    if (seenFeatureNames.has(feature.featureName)) {
+      continue;
+    }
+
+    promoted.push(feature.featureName);
+    seenFeatureNames.add(feature.featureName);
+  }
+
+  for (const feature of rankedFeatures) {
+    if (promoted.length >= MAX_KEY_FEATURES) {
+      break;
+    }
+
+    if (seenFeatureNames.has(feature.featureName)) {
+      continue;
+    }
+
+    promoted.push(feature.featureName);
+    seenFeatureNames.add(feature.featureName);
+  }
+
+  return promoted.slice(0, MAX_KEY_FEATURES);
+}
+
+function scoreFeatureEntry(entry) {
+  const typeWeights = {
+    feature: 4,
+    refactor: 3,
+    improvement: 2,
+    fix: 2
+  };
+
+  return typeWeights[normalizeUpdateType(entry.type)] || 1;
+}
+
+function describeCanonicalSubject(featureKey) {
+  return getFeatureMeta(featureKey).subject;
+}
+
+function createCapabilitySnapshotEntry(featureKey, fileCount, timestamp) {
+  const subject = describeCanonicalSubject(featureKey);
+  const type = fileCount > 2 ? 'refactor' : 'improvement';
+
+  return {
+    timestamp,
+    scope: inferScopeFromFeature(featureKey),
+    title: buildIntentTitle(type, subject),
+    type,
+    impact: describeIntentImpact(type, featureKey, subject),
+    feature_key: featureKey,
+    feature_name: getFeatureMeta(featureKey).name,
+    source: 'project_snapshot'
+  };
+}
+
+function inferScopeFromFeature(featureKey) {
   if (
-    fs.existsSync(path.join(projectRoot, 'server', 'server.js')) &&
-    fs.existsSync(path.join(projectRoot, 'server', 'routes.js'))
+    featureKey === 'github_sync' ||
+    featureKey === 'project_intelligence' ||
+    featureKey === 'change_tracking' ||
+    featureKey === 'project_setup'
   ) {
-    features.push('Local Express server for AI-readable context endpoints');
+    return 'logic';
   }
 
-  if (fs.existsSync(path.join(projectRoot, 'core', 'gitSync.js'))) {
-    features.push('Optional GitHub sync for publishing public AI-readable context');
+  if (featureKey === 'cli_workflow' || featureKey === 'cli_orchestration') {
+    return 'cli';
   }
 
-  if (fs.existsSync(path.join(projectRoot, 'core', 'stateManager.js'))) {
-    features.push('Intelligent state engine that summarizes project evolution for AI tools');
+  if (featureKey === 'local_context_server' || featureKey === 'context_delivery_system') {
+    return 'backend';
   }
 
-  return features;
+  if (featureKey === 'package_configuration') {
+    return 'dependencies';
+  }
+
+  if (featureKey === 'documentation') {
+    return 'documentation';
+  }
+
+  return 'project';
 }
 
-function deriveKnownIssues(projectRoot, techStack) {
+function deriveKnownIssues(projectRoot, techStack, keyFeatures) {
   const knownIssues = [];
 
   if (!hasTestIndicators(projectRoot)) {
@@ -785,6 +1245,10 @@ function deriveKnownIssues(projectRoot, techStack) {
 
   if (!techStack.framework) {
     knownIssues.push('No common application framework dependency is currently detected.');
+  }
+
+  if (keyFeatures.length < 2) {
+    knownIssues.push('Project intelligence history is still sparse, so AI context may omit mature capabilities.');
   }
 
   return knownIssues;
@@ -804,69 +1268,104 @@ function hasTestIndicators(projectRoot) {
   return testPaths.some((relativePath) => fs.existsSync(path.join(projectRoot, relativePath)));
 }
 
-function determineCurrentStage(keyFeatures) {
-  const hasCli = keyFeatures.some((feature) => feature.includes('CLI commands'));
-  const hasSync = keyFeatures.some((feature) => feature.includes('GitHub sync'));
-  const hasServer = keyFeatures.some((feature) => feature.includes('Express server'));
-  const hasWatcher = keyFeatures.some((feature) => feature.includes('watcher'));
-  const hasIntelligence = keyFeatures.some((feature) => feature.includes('Intelligent state engine'));
-
-  if (hasCli && hasSync && hasServer && hasWatcher && hasIntelligence) {
+function determineCurrentStage(keyFeatures, historyEntries) {
+  if (keyFeatures.length >= 4 && historyEntries.length >= 4) {
     return 'Production-ready';
   }
 
-  if (hasCli && hasSync) {
+  if (keyFeatures.length >= 2 || historyEntries.length >= 2) {
     return 'Functional prototype';
   }
 
   return 'Early development';
 }
 
-function generateAiSummary(state) {
-  const language = state.tech_stack.language || 'Project';
-  const hasServer = state.key_features.some((feature) => feature.includes('Express server'));
-  const hasSync = state.key_features.some((feature) => feature.includes('GitHub sync'));
-  const clauses = ['tracks meaningful project evolution', 'generates structured AI-readable context'];
+function generateAiSummary(state, historyEntries) {
+  const featureSignals = collectFeatureSignals(historyEntries, state.key_features);
+  const projectType = featureSignals.has('cli_workflow') || featureSignals.has('cli_orchestration')
+    ? 'CLI tool'
+    : 'project system';
+  let coreCapability = 'maintains an AI-readable view of project progress';
+  let uniqueValue = 'so AI collaborators can understand the current project state immediately';
 
-  if (hasServer) {
-    clauses.push('serves project context locally through Express');
+  if (featureSignals.has('project_intelligence') && featureSignals.has('change_tracking')) {
+    coreCapability = 'turns meaningful project activity into AI-readable context';
+  } else if (featureSignals.has('project_intelligence')) {
+    coreCapability = 'converts development work into AI-readable project state';
+  } else if (featureSignals.has('local_context_server')) {
+    coreCapability = 'delivers AI-readable project context through clear endpoints';
   }
 
-  if (hasSync) {
-    clauses.push('can publish public AI-readable context through optional GitHub sync');
+  if (
+    featureSignals.has('github_sync') ||
+    featureSignals.has('context_delivery_system') ||
+    featureSignals.has('cli_orchestration')
+  ) {
+    uniqueValue = 'and enables public AI collaboration through GitHub-synced context endpoints';
+  } else if (featureSignals.has('local_context_server')) {
+    uniqueValue = 'and keeps current context available through local AI endpoints';
   }
 
-  return `AI-powered ${language} CLI that ${clauses.join(', ')}.`;
+  return `${capitalize(projectType)} that ${coreCapability} ${uniqueValue}.`;
 }
 
-function generateNextSteps(state) {
+function collectFeatureSignals(historyEntries, keyFeatures) {
+  const featureSignals = new Set();
+
+  for (const entry of historyEntries) {
+    if (entry.feature_key) {
+      featureSignals.add(entry.feature_key);
+    }
+  }
+
+  for (const featureName of keyFeatures || []) {
+    for (const [featureKey, featureMeta] of Object.entries(FEATURE_CATALOG)) {
+      if (featureMeta.name === featureName) {
+        featureSignals.add(featureKey);
+      }
+    }
+  }
+
+  return featureSignals;
+}
+
+function generateNextSteps(state, historyEntries) {
   const nextSteps = [];
+  const featureSignals = collectFeatureSignals(historyEntries, state.key_features);
 
   if (state.key_features.length === 0) {
-    nextSteps.push('Define core features for the AI context workflow.');
+    nextSteps.push('Capture a few meaningful project milestones so stable AI-visible features can emerge from real development history.');
   }
 
   if (state.known_issues.includes('No automated test suite is detected yet.')) {
-    nextSteps.push('Add automated tests for the state engine, watcher, and GitHub sync flows.');
+    nextSteps.push('Add automated tests for the intelligence engine, watcher, and GitHub sync workflow.');
+  }
+
+  if (!featureSignals.has('project_intelligence')) {
+    nextSteps.push('Strengthen the intelligence engine so more project-level capabilities are captured automatically.');
+  }
+
+  if (!featureSignals.has('local_context_server')) {
+    nextSteps.push('Expand context delivery coverage so AI consumers can reliably read current project state.');
+  }
+
+  if (!featureSignals.has('github_sync')) {
+    nextSteps.push('Validate public sync behavior so AI tools can safely consume the latest project context from GitHub.');
   }
 
   if (state.current_stage === 'Early development') {
-    nextSteps.push('Implement the next core workflow milestone and document how AI should use it.');
-  }
-
-  if (state.current_stage === 'Functional prototype') {
-    nextSteps.push('Harden the current feature set with tests and release validation.');
-  }
-
-  if (!state.tech_stack.framework) {
-    nextSteps.push('Document the intended framework or extend stack detection for this project.');
-  }
-
-  if (state.recent_updates.length === 0) {
-    nextSteps.push('Capture the first meaningful project milestone to seed AI context history.');
+    nextSteps.push('Ship the next core workflow milestone to turn the project into a functional prototype.');
   }
 
   return Array.from(new Set(nextSteps)).slice(0, 4);
+}
+
+function capitalize(value) {
+  if (!value) {
+    return '';
+  }
+
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function createDebouncedStateUpdater(projectRoot, options) {
@@ -938,8 +1437,10 @@ module.exports = {
   detectProjectMetadata,
   ensureContextDirectory,
   getContextPaths,
+  groupEventsByIntent,
   interpretChange,
   loadRuntimeConfig,
+  promoteFeatures,
   readJsonFile,
   renderTemplate,
   scoreEvent,
