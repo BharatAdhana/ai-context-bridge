@@ -22,15 +22,17 @@ npm install
 To use the local CLI in this repository:
 
 ```bash
-npx ai-context init
-npx ai-context start
+npx aibridge init
+npx aibridge start
 ```
 
-If published to npm, the package exposes the `ai-context` binary.
+If published to npm, the package exposes the `aibridge` binary.
+
+`ai-context` is supported as a legacy alias.
 
 ## Commands
 
-### `ai-context init`
+### `aibridge init`
 
 Creates `.ai-context/` and writes:
 
@@ -40,7 +42,7 @@ Creates `.ai-context/` and writes:
 - `changelog.json`
 - `config.json`
 
-### `ai-context start`
+### `aibridge start`
 
 Starts:
 
@@ -50,7 +52,7 @@ Starts:
 
 Default server port: `3333`
 
-### `ai-context update`
+### `aibridge update`
 
 Triggers a manual context refresh and optional git sync.
 
@@ -102,7 +104,7 @@ Default configuration:
 
 ## HTTP endpoints
 
-When `ai-context start` is running:
+When `aibridge start` is running:
 
 - `GET /state.json`
 - `GET /brain.txt`
@@ -112,8 +114,8 @@ When `ai-context start` is running:
 ## Example usage
 
 ```bash
-npx ai-context init
-npx ai-context start
+npx aibridge init
+npx aibridge start
 ```
 
 Then point your AI tool to:

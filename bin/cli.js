@@ -98,9 +98,9 @@ function printHelp() {
   console.log(`aibridge-context
 
 Usage:
-  ai-context init
-  ai-context start
-  ai-context update
+  aibridge init
+  aibridge start
+  aibridge update
 
 Commands:
   init    Create .ai-context and initialize AI context files
