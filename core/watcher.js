@@ -7,6 +7,8 @@ const { syncContextToGit } = require('./gitSync');
 const {
   createDebouncedStateUpdater,
   loadRuntimeConfig,
+  scoreEvent,
+  shouldIgnoreProjectFile,
   updateProjectState
 } = require('./stateManager');
 
@@ -18,8 +20,7 @@ async function startWatcher(projectRoot, options) {
   const settings = Object.assign({ logger: null }, options);
   const logger = settings.logger;
   const config = await loadRuntimeConfig(projectRoot);
-  const syncCallback = async () =>
-    syncContextToGit(projectRoot, config.gitSync, logger);
+  const syncCallback = async () => syncContextToGit(projectRoot, config.gitSync, logger);
   const debouncedUpdater = createDebouncedStateUpdater(projectRoot, {
     debounceMs: config.debounceMs,
     logger,
@@ -27,11 +28,10 @@ async function startWatcher(projectRoot, options) {
   });
 
   const watcher = chokidar.watch(projectRoot, {
-    ignored: [
-      /(^|[\\/])\.git([\\/]|$)/,
-      /(^|[\\/])node_modules([\\/]|$)/,
-      /(^|[\\/])\.ai-context([\\/]|$)/
-    ],
+    ignored(filePath) {
+      const normalizedPath = normalizeFilePath(projectRoot, filePath);
+      return shouldIgnoreProjectFile(normalizedPath);
+    },
     ignoreInitial: true,
     persistent: true
   });
@@ -39,12 +39,12 @@ async function startWatcher(projectRoot, options) {
   function handleEvent(action, filePath) {
     const normalizedPath = normalizeFilePath(projectRoot, filePath);
 
-    if (!normalizedPath || normalizedPath.startsWith('.ai-context/')) {
+    if (!normalizedPath || shouldIgnoreProjectFile(normalizedPath) || scoreEvent(normalizedPath) < 2) {
       return;
     }
 
     if (logger) {
-      logger.info(`${action} ${normalizedPath}`);
+      logger.debug(`Queued meaningful ${action} for ${normalizedPath}`);
     }
 
     debouncedUpdater.enqueue({
