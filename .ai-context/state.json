@@ -1,7 +1,7 @@
 {
   "project": "aibridge-context",
   "version": "1.4.0",
-  "last_updated": "2026-04-25T16:03:30.337Z",
+  "last_updated": "2026-04-26T19:22:52.653Z",
   "ai_summary": "CLI tool that turns meaningful project activity into AI-readable context and enables public AI collaboration through GitHub-synced context endpoints.",
   "tech_stack": {
     "language": "Node.js",
@@ -11,6 +11,16 @@
   },
   "current_stage": "Production-ready",
   "recent_updates": [
+    {
+      "title": "Improved project intelligence engine",
+      "type": "improvement",
+      "impact": "Improves how project progress is summarized for AI systems."
+    },
+    {
+      "title": "Expanded project intelligence engine",
+      "type": "feature",
+      "impact": "Adds how project progress is summarized for AI systems."
+    },
     {
       "title": "Improved AI context delivery service",
       "type": "improvement",

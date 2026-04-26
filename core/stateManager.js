@@ -17,6 +17,36 @@ const LOW_VALUE_FEATURE_KEYS = new Set([
   'project_workflow'
 ]);
 
+async function safeWriteJSON(filePath, data) {
+  const fs = require("fs");
+  const path = require("path");
+
+  const tmpPath = filePath + ".tmp";
+
+  try {
+    // ensure directory exists
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    // write temp file
+    await fs.promises.writeFile(tmpPath, data, "utf-8");
+
+    // rename only if tmp exists
+    if (fs.existsSync(tmpPath)) {
+      await fs.promises.rename(tmpPath, filePath);
+    } else {
+      await fs.promises.writeFile(filePath, data, "utf-8");
+    }
+  } catch (err) {
+    console.error("[aibridge] Write fallback triggered:", err.message);
+
+    try {
+      await fs.promises.writeFile(filePath, data, "utf-8");
+    } catch (e) {
+      console.error("[aibridge] Failed to write state file:", e.message);
+    }
+  }
+}
+
 const FEATURE_CATALOG = {
   cli_workflow: {
     name: 'CLI workflow for initializing, updating, and linking AI context',
@@ -300,9 +330,7 @@ async function writeJsonAtomic(filePath, value) {
 }
 
 async function writeTextAtomic(filePath, content) {
-  const tempFilePath = `${filePath}.tmp`;
-  await fsp.writeFile(tempFilePath, content, 'utf8');
-  await fsp.rename(tempFilePath, filePath);
+  await safeWriteJSON(filePath, content);
 }
 
 function createDefaultState(projectRoot) {
