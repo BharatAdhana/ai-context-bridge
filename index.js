@@ -3,6 +3,7 @@
 const { initProject } = require('./core/init');
 const { startWatcher } = require('./core/watcher');
 const {
+  bootstrapProjectAnalysis,
   updateProjectState,
   loadRuntimeConfig,
   updateRuntimeConfig
@@ -10,6 +11,7 @@ const {
 const { startServer } = require('./server/server');
 const {
   buildPublicAiUrls,
+  bootstrapProjectAnalysis,
   ensureGitInitialized,
   linkGithubRepository,
   syncContextToGit

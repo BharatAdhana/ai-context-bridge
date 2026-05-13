@@ -1,14 +1,22 @@
 {
   "entries": [
     {
+      "timestamp": "2026-04-26T19:28:41.896Z",
+      "scope": "dependencies",
+      "title": "Improved package configuration",
+      "type": "improvement",
+      "impact": "Improves package installation and distribution behavior.",
+      "feature_key": "package_configuration",
+      "feature_name": "Package configuration for distributing the AI context CLI"
+    },
+    {
       "timestamp": "2026-04-26T19:22:52.653Z",
       "scope": "logic",
       "title": "Improved project intelligence engine",
       "type": "improvement",
       "impact": "Improves how project progress is summarized for AI systems.",
       "feature_key": "project_intelligence",
-      "feature_name": "Project intelligence engine that turns development activity into AI-readable state",
-      "source": "event"
+      "feature_name": "Project intelligence engine that turns development activity into AI-readable state"
     },
     {
       "timestamp": "2026-04-26T19:15:08.674Z",
@@ -17,8 +25,7 @@
       "type": "feature",
       "impact": "Adds how project progress is summarized for AI systems.",
       "feature_key": "project_intelligence",
-      "feature_name": "Project intelligence engine that turns development activity into AI-readable state",
-      "source": "event"
+      "feature_name": "Project intelligence engine that turns development activity into AI-readable state"
     },
     {
       "timestamp": "2026-04-25T09:33:26.978Z",
@@ -27,8 +34,7 @@
       "type": "improvement",
       "impact": "Improves how AI tools consume project context through local endpoints.",
       "feature_key": "local_context_server",
-      "feature_name": "Local server for AI-readable project context endpoints",
-      "source": "history"
+      "feature_name": "Local server for AI-readable project context endpoints"
     },
     {
       "timestamp": "1970-01-01T00:00:00.000Z",
@@ -37,8 +43,7 @@
       "type": "improvement",
       "impact": "Improves how developers initialize and manage AI context from the command line.",
       "feature_key": "cli_workflow",
-      "feature_name": "CLI workflow for initializing, updating, and linking AI context",
-      "source": "project_snapshot"
+      "feature_name": "CLI workflow for initializing, updating, and linking AI context"
     },
     {
       "timestamp": "1970-01-01T00:00:00.000Z",
@@ -47,8 +52,7 @@
       "type": "refactor",
       "impact": "Improves how project progress is summarized for AI systems.",
       "feature_key": "project_intelligence",
-      "feature_name": "Project intelligence engine that turns development activity into AI-readable state",
-      "source": "project_snapshot"
+      "feature_name": "Project intelligence engine that turns development activity into AI-readable state"
     },
     {
       "timestamp": "1970-01-01T00:00:00.000Z",
@@ -57,18 +61,7 @@
       "type": "improvement",
       "impact": "Improves the overall project workflow for maintaining AI-readable context.",
       "feature_key": "project_workflow",
-      "feature_name": "Core project workflow for maintaining AI-readable project state",
-      "source": "project_snapshot"
-    },
-    {
-      "timestamp": "1970-01-01T00:00:00.000Z",
-      "scope": "dependencies",
-      "title": "Improved package configuration",
-      "type": "improvement",
-      "impact": "Improves package installation and distribution behavior.",
-      "feature_key": "package_configuration",
-      "feature_name": "Package configuration for distributing the AI context CLI",
-      "source": "project_snapshot"
+      "feature_name": "Core project workflow for maintaining AI-readable project state"
     },
     {
       "timestamp": "1970-01-01T00:00:00.000Z",
@@ -77,8 +70,7 @@
       "type": "improvement",
       "impact": "Improves reliability of publishing AI-readable project context to GitHub.",
       "feature_key": "github_sync",
-      "feature_name": "Public GitHub sync for AI-readable project context",
-      "source": "project_snapshot"
+      "feature_name": "Public GitHub sync for AI-readable project context"
     },
     {
       "timestamp": "1970-01-01T00:00:00.000Z",
@@ -87,8 +79,7 @@
       "type": "improvement",
       "impact": "Improves first-run setup and configuration clarity for teams adopting AI context.",
       "feature_key": "project_setup",
-      "feature_name": "Guided setup flow for safe AI context initialization",
-      "source": "project_snapshot"
+      "feature_name": "Guided setup flow for safe AI context initialization"
     },
     {
       "timestamp": "1970-01-01T00:00:00.000Z",
@@ -97,8 +88,7 @@
       "type": "improvement",
       "impact": "Improves how meaningful project evolution is detected without noise.",
       "feature_key": "change_tracking",
-      "feature_name": "Meaningful change tracking that filters noise from project activity",
-      "source": "project_snapshot"
+      "feature_name": "Meaningful change tracking that filters noise from project activity"
     }
   ]
 }

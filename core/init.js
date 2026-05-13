@@ -4,6 +4,7 @@ const path = require('path');
 const fsp = require('fs/promises');
 
 const {
+  bootstrapProjectAnalysis,
   createDefaultChangelog,
   createDefaultState,
   detectProjectMetadata,
@@ -45,10 +46,20 @@ async function initProject(projectRoot, options) {
   const templateState = JSON.parse(stateTemplate);
   const templateChangelog = JSON.parse(changelogTemplate);
   let enableGitSync = false;
+  const bootstrapState = createDefaultState(projectRoot);
+  const bootstrapAnalysis = bootstrapProjectAnalysis(projectRoot);
 
-  const initialState = Object.assign({}, templateState, existingState || createDefaultState(projectRoot), {
+  const initialState = Object.assign({}, templateState, existingState || bootstrapState, {
     project: metadata.project,
-    version: metadata.version
+    version: metadata.version,
+    ai_summary: bootstrapState.ai_summary,
+    tech_stack: bootstrapAnalysis.techStack,
+    architecture_patterns: bootstrapAnalysis.architecturePatterns,
+    implementation_details: bootstrapAnalysis.implementationDetails,
+    current_stage: bootstrapState.current_stage,
+    key_features: bootstrapState.key_features,
+    known_issues: bootstrapState.known_issues,
+    next_steps: bootstrapState.next_steps
   });
 
   const initialContext = renderTemplate(contextTemplate, {
