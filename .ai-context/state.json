@@ -1,7 +1,7 @@
 {
   "project": "aibridge-context",
-  "version": "1.5.0",
-  "last_updated": "2026-05-13T10:38:51.882Z",
+  "version": "1.5.1",
+  "last_updated": "2026-05-13T11:57:25.575Z",
   "ai_summary": "CLI tool that generates AI-readable project context, tracks meaningful changes, and can publish public project state through GitHub.",
   "tech_stack": {
     "language": "Node.js",

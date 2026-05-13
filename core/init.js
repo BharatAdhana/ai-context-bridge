@@ -48,14 +48,28 @@ async function initProject(projectRoot, options) {
   let enableGitSync = false;
   const bootstrapState = createDefaultState(projectRoot);
   const bootstrapAnalysis = bootstrapProjectAnalysis(projectRoot);
+  const mergedArchitecturePatterns =
+    Array.isArray(bootstrapAnalysis.architecturePatterns) &&
+    bootstrapAnalysis.architecturePatterns.length > 0
+      ? bootstrapAnalysis.architecturePatterns
+      : Array.isArray(existingState && existingState.architecture_patterns)
+        ? existingState.architecture_patterns
+        : [];
+  const mergedImplementationDetails =
+    Array.isArray(bootstrapAnalysis.implementationDetails) &&
+    bootstrapAnalysis.implementationDetails.length > 0
+      ? bootstrapAnalysis.implementationDetails
+      : Array.isArray(existingState && existingState.implementation_details)
+        ? existingState.implementation_details
+        : [];
 
   const initialState = Object.assign({}, templateState, existingState || bootstrapState, {
     project: metadata.project,
     version: metadata.version,
     ai_summary: bootstrapState.ai_summary,
     tech_stack: bootstrapAnalysis.techStack,
-    architecture_patterns: bootstrapAnalysis.architecturePatterns,
-    implementation_details: bootstrapAnalysis.implementationDetails,
+    architecture_patterns: mergedArchitecturePatterns,
+    implementation_details: mergedImplementationDetails,
     current_stage: bootstrapState.current_stage,
     key_features: bootstrapState.key_features,
     known_issues: bootstrapState.known_issues,

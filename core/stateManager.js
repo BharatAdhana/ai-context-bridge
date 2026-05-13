@@ -416,6 +416,54 @@ function createDefaultState(projectRoot) {
   return state;
 }
 
+function mergePreferredArray(preferredValue, fallbackValue) {
+  if (Array.isArray(preferredValue) && preferredValue.length > 0) {
+    return preferredValue;
+  }
+
+  if (Array.isArray(fallbackValue) && fallbackValue.length > 0) {
+    return fallbackValue;
+  }
+
+  return [];
+}
+
+function mergePreferredObject(preferredValue, fallbackValue) {
+  const preferredObject = isObject(preferredValue) ? preferredValue : {};
+  const fallbackObject = isObject(fallbackValue) ? fallbackValue : {};
+
+  return Object.assign({}, fallbackObject, preferredObject);
+}
+
+function composeStateFromAnalysis(existingState, metadata, bootstrap, overrides) {
+  const baseState = isObject(existingState) ? existingState : {};
+  const nextState = Object.assign(
+    {
+      project: metadata.project,
+      version: metadata.version,
+      last_updated: baseState.last_updated || new Date(0).toISOString(),
+      ai_summary: '',
+      tech_stack: mergePreferredObject(bootstrap.techStack, baseState.tech_stack),
+      architecture_patterns: mergePreferredArray(
+        bootstrap.architecturePatterns,
+        baseState.architecture_patterns
+      ),
+      implementation_details: mergePreferredArray(
+        bootstrap.implementationDetails,
+        baseState.implementation_details
+      ),
+      current_stage: '',
+      recent_updates: Array.isArray(baseState.recent_updates) ? baseState.recent_updates : [],
+      key_features: mergePreferredArray(bootstrap.keyFeatures, baseState.key_features),
+      known_issues: [],
+      next_steps: []
+    },
+    overrides || {}
+  );
+
+  return nextState;
+}
+
 function bootstrapProjectAnalysis(projectRoot) {
   const resolvedRoot = resolveProjectRoot(projectRoot);
   const metadata = detectProjectMetadata(resolvedRoot);
@@ -825,20 +873,33 @@ async function updateProjectState(projectRoot, changeEvent, options) {
     ? dedupeRecentUpdates(groupedUpdates.map(toStateUpdate).concat(normalizeStoredUpdates(existingState.recent_updates)))
         .slice(0, MAX_RECENT_UPDATES)
     : normalizeStoredUpdates(existingState.recent_updates).slice(0, MAX_RECENT_UPDATES);
-  const nextState = {
-    project: metadata.project,
-    version: metadata.version,
+  const mergedArchitecturePatterns = mergePreferredArray(
+    bootstrap.architecturePatterns,
+    existingState.architecture_patterns
+  );
+  const mergedImplementationDetails = mergePreferredArray(
+    bootstrap.implementationDetails,
+    existingState.implementation_details
+  );
+  const nextState = composeStateFromAnalysis(existingState, metadata, bootstrap, {
     last_updated: timestamp,
-    ai_summary: '',
-    tech_stack: bootstrap.techStack,
-    architecture_patterns: bootstrap.architecturePatterns,
-    implementation_details: bootstrap.implementationDetails,
-    current_stage: determineCurrentStage(keyFeatures, historyEntries, bootstrap.implementationDetails),
+    tech_stack: mergePreferredObject(bootstrap.techStack, existingState.tech_stack),
+    architecture_patterns: mergedArchitecturePatterns,
+    implementation_details: mergedImplementationDetails,
+    current_stage: determineCurrentStage(
+      keyFeatures,
+      historyEntries,
+      mergedImplementationDetails
+    ),
     recent_updates: recentUpdates,
     key_features: keyFeatures,
-    known_issues: deriveKnownIssues(resolvedRoot, bootstrap),
+    known_issues: deriveKnownIssues(resolvedRoot, Object.assign({}, bootstrap, {
+      architecturePatterns: mergedArchitecturePatterns,
+      implementationDetails: mergedImplementationDetails,
+      keyFeatures
+    })),
     next_steps: []
-  };
+  });
 
   nextState.ai_summary = generateAiSummary(nextState, bootstrap);
   nextState.next_steps = generateNextSteps(nextState, bootstrap, historyEntries);
