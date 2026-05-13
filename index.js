@@ -11,7 +11,6 @@ const {
 const { startServer } = require('./server/server');
 const {
   buildPublicAiUrls,
-  bootstrapProjectAnalysis,
   ensureGitInitialized,
   linkGithubRepository,
   syncContextToGit
