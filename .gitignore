@@ -1,18 +1,30 @@
 node_modules/
 
-# Ignore runtime AI data (generated)
+# Runtime AI state
+
 .ai-context/state.json
 .ai-context/changelog.json
 
-# Keep templates and config
-!.ai-context/
-!.ai-context/*.template.*
+# Allow stable config/templates only
+
 !.ai-context/config.json
+!.ai-context/*.template.*
 
 # Logs
+
 *.log
 .start.out.log
 .start.err.log
 
-# Env
+# Environment
+
 .env
+
+# Release artifacts
+
+*.tgz
+
+# Temporary prompts
+
+next-prompt.txt
+next-prompt.txt.txt
