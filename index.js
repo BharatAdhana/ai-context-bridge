@@ -1,14 +1,17 @@
 'use strict';
 
-const { initProject } = require('./core/init');
-const { startWatcher } = require('./core/watcher');
+const { initProject }     = require('./core/init');
+const { startWatcher }    = require('./core/watcher');
+const { generateBriefing } = require('./core/briefingGenerator');
 const {
   bootstrapProjectAnalysis,
   updateProjectState,
   loadRuntimeConfig,
-  updateRuntimeConfig
+  updateRuntimeConfig,
+  createDefaultState,
+  getContextPaths
 } = require('./core/stateManager');
-const { startServer } = require('./server/server');
+const { startServer }  = require('./server/server');
 const {
   buildPublicAiUrls,
   ensureGitInitialized,
@@ -17,14 +20,25 @@ const {
 } = require('./core/gitSync');
 
 module.exports = {
-  buildPublicAiUrls,
-  ensureGitInitialized,
+  // Core lifecycle
   initProject,
-  linkGithubRepository,
   startWatcher,
+  startServer,
+
+  // State management
   updateProjectState,
   loadRuntimeConfig,
   updateRuntimeConfig,
-  startServer,
+  createDefaultState,
+  getContextPaths,
+  bootstrapProjectAnalysis,
+
+  // Briefing
+  generateBriefing,
+
+  // Git
+  buildPublicAiUrls,
+  ensureGitInitialized,
+  linkGithubRepository,
   syncContextToGit
 };

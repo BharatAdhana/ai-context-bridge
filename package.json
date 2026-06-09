@@ -1,7 +1,7 @@
 {
   "name": "aibridge-context",
-  "version": "1.5.2",
-  "description": "Zero-config CLI and library for generating AI-readable project context, serving it locally, and syncing it with git.",
+  "version": "2.0.0",
+  "description": "Zero-config CLI that auto-generates an AI briefing file for any project. Tracks code changes with real diffs, errors, fixes, file structure, API routes and dependencies. One command: npx aibridge-context start",
   "main": "./index.js",
   "bin": {
     "aibridge-context": "./bin/cli.js",
@@ -29,7 +29,11 @@
     "watcher",
     "express",
     "developer-tools",
-    "git"
+    "git",
+    "briefing",
+    "diff",
+    "changelog",
+    "code-tracking"
   ],
   "author": "",
   "license": "MIT",

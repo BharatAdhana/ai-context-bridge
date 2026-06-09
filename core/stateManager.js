@@ -1,356 +1,750 @@
 'use strict';
 
-const fs = require('fs');
-const fsp = require('fs/promises');
+const fs   = require('fs');
+const fsp  = require('fs/promises');
 const path = require('path');
 
-const CONTEXT_DIR_NAME = '.ai-context';
-const MAX_RECENT_UPDATES = 5;
-const MAX_CHANGELOG_ENTRIES = 50;
-const MAX_KEY_FEATURES = 6;
-const MAX_IMPLEMENTATION_DETAILS = 8;
-const IMPORTANT_DIRECTORIES = ['core/', 'server/', 'bin/', 'src/', 'routes/', 'controllers/', 'services/'];
-const IMPORTANT_EXTENSIONS = new Set(['.js', '.ts', '.py']);
-const IGNORED_DIRECTORY_NAMES = new Set([
-  'node_modules',
-  '.git',
-  '.ai-context',
-  'dist',
-  'build',
-  'coverage',
-  '.tmp',
-  'logs'
+const { diffTexts, extractCodeSignals } = require('./codeDiff');
+const { buildCodeFileCatalogue, getSnapshot, readCurrentContent } = require('./fileSnapshot');
+const { generateBriefing } = require('./briefingGenerator');
+
+// ─────────────────────────────────────────────────────────────────
+//  Constants
+// ─────────────────────────────────────────────────────────────────
+
+const CONTEXT_DIR_NAME        = '.ai-context';
+const MAX_RECENT_UPDATES      = 15;
+const MAX_CHANGELOG_ENTRIES   = 200;
+const MAX_KEY_FEATURES        = 12;
+const MAX_IMPL_DETAILS        = 15;
+const MAX_TREE_DEPTH          = 6;
+const MAX_RESOLVED_ISSUES     = 50;
+const MAX_ACTIVE_ERRORS       = 30;
+const MAX_CODE_CHANGE_HISTORY = 100;
+
+const IMPORTANT_DIRS = new Set([
+  'core','server','bin','src','routes','controllers',
+  'services','middleware','lib','utils','api','helpers'
 ]);
-const ANALYSIS_ROOT_FILES = [
-  'package.json',
-  'app.js',
-  'app.ts',
-  'index.js',
-  'index.ts',
-  'main.py',
-  'requirements.txt',
-  'tsconfig.json'
-];
-const ANALYSIS_DIRECTORIES = [
-  'routes',
-  'server',
-  'controllers',
-  'services',
-  'middleware',
-  'config',
-  'src',
-  'core',
-  'bin'
-];
-const FEATURE_CATALOG = {
-  ai_context_generation: 'AI-readable project context generation',
-  cli_automation: 'Command-line workflow for project setup and automation',
-  change_tracking: 'Automatic change tracking with noise filtering',
-  public_sync: 'Optional GitHub sync for publishing project context',
-  local_context_server: 'HTTP endpoints for accessing current project context',
-  rest_api: 'REST-style API surface',
-  auth: 'Authenticated workflows secured with JWT',
-  persistence: 'MongoDB-backed data persistence',
-  realtime: 'Real-time communication channel',
-  external_api: 'External service integration',
-  middleware: 'Middleware-driven request processing',
-  config_management: 'Centralized project configuration management'
-};
+const CODE_EXTENSIONS = new Set(['.js','.ts','.mjs','.cjs','.jsx','.tsx','.py','.go','.rs','.java','.rb','.php','.cs','.swift']);
+const IGNORED_DIRS    = new Set([
+  'node_modules','.git','.ai-context','dist','build',
+  'coverage','.tmp','logs','.cache','out','.next','.nuxt'
+]);
+
 const DEFAULT_CONFIG = {
   port: 3333,
   debounceMs: 600,
   gitSync: {
-    enabled: false,
-    push: true,
+    enabled: false, push: true,
     commitMessage: 'auto: update AI context',
-    remote: 'origin',
-    branch: 'main',
-    repoUrl: ''
+    remote: 'origin', branch: 'main', repoUrl: ''
   }
 };
 
-function resolveProjectRoot(projectRoot) {
-  return path.resolve(projectRoot || process.cwd());
-}
+// ─────────────────────────────────────────────────────────────────
+//  Path helpers
+// ─────────────────────────────────────────────────────────────────
+
+function resolveRoot(projectRoot) { return path.resolve(projectRoot || process.cwd()); }
 
 function getContextPaths(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const contextDir = path.join(resolvedRoot, CONTEXT_DIR_NAME);
-
+  const root       = resolveRoot(projectRoot);
+  const contextDir = path.join(root, CONTEXT_DIR_NAME);
   return {
     contextDir,
-    stateFile: path.join(contextDir, 'state.json'),
-    brainFile: path.join(contextDir, 'brain.txt'),
-    contextFile: path.join(contextDir, 'context.md'),
+    stateFile:     path.join(contextDir, 'state.json'),
+    brainFile:     path.join(contextDir, 'brain.txt'),
+    contextFile:   path.join(contextDir, 'context.md'),
     changelogFile: path.join(contextDir, 'changelog.json'),
-    configFile: path.join(contextDir, 'config.json')
+    configFile:    path.join(contextDir, 'config.json'),
+    briefingFile:  path.join(contextDir, 'briefing.md')
   };
 }
 
-function deepMerge(baseValue, overrideValue) {
-  if (Array.isArray(baseValue) || Array.isArray(overrideValue)) {
-    return overrideValue === undefined ? baseValue : overrideValue;
+// ─────────────────────────────────────────────────────────────────
+//  Utilities
+// ─────────────────────────────────────────────────────────────────
+
+function isObj(v)  { return Boolean(v) && typeof v === 'object' && !Array.isArray(v); }
+function uniq(arr) { return Array.from(new Set((arr || []).filter(Boolean))); }
+function cap(s)    { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+
+function deepMerge(base, override) {
+  if (Array.isArray(base) || Array.isArray(override)) return override === undefined ? base : override;
+  if (isObj(base) && isObj(override)) {
+    const out = Object.assign({}, base);
+    for (const [k, v] of Object.entries(override)) out[k] = deepMerge(base[k], v);
+    return out;
   }
-
-  if (isObject(baseValue) && isObject(overrideValue)) {
-    const merged = Object.assign({}, baseValue);
-
-    for (const [key, value] of Object.entries(overrideValue)) {
-      merged[key] = deepMerge(baseValue[key], value);
-    }
-
-    return merged;
-  }
-
-  return overrideValue === undefined ? baseValue : overrideValue;
+  return override === undefined ? base : override;
 }
 
-function isObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+function normPath(p) { return String(p || '').split(path.sep).join('/').replace(/^\.\/+/, ''); }
+
+function insideRoot(root, target) {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-function normalizeProjectPath(filePath) {
-  return String(filePath || '').split(path.sep).join('/').replace(/^\.\/+/, '');
-}
-
-function isInsideProjectRoot(projectRoot, targetPath) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const resolvedTarget = path.resolve(targetPath);
-  const relativePath = path.relative(resolvedRoot, resolvedTarget);
-
-  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-}
-
-function getRootPackageJsonPath(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  return path.join(resolvedRoot, 'package.json');
-}
-
-function readRootPackageJson(projectRoot) {
-  const packageJsonPath = getRootPackageJsonPath(projectRoot);
-
-  if (!fs.existsSync(packageJsonPath)) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  } catch (error) {
-    return null;
-  }
-}
-
-function detectProjectMetadata(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const packageJson = readRootPackageJson(resolvedRoot);
-  const techStack = detectTechStack(resolvedRoot, packageJson);
-  const packageManager = detectPackageManager(resolvedRoot);
-
-  return {
-    project: packageJson && packageJson.name ? packageJson.name : path.basename(resolvedRoot),
-    version: packageJson && packageJson.version ? packageJson.version : '0.1.0',
-    techStack: Object.assign({}, techStack, {
-      package_manager: packageManager
-    }),
-    stackLabel: buildStackLabel(techStack),
-    packageManager
-  };
-}
-
-function detectTechStack(projectRoot, packageJson) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const rootPackage = packageJson || readRootPackageJson(resolvedRoot);
-  const dependencies = Object.assign(
-    {},
-    (rootPackage && rootPackage.dependencies) || {},
-    (rootPackage && rootPackage.devDependencies) || {}
-  );
-  const hasPythonMarker = ['pyproject.toml', 'requirements.txt', 'setup.py'].some((marker) =>
-    fs.existsSync(path.join(resolvedRoot, marker))
-  );
-  let language = '';
-  let runtime = '';
-
-  if (rootPackage || hasAnyFileExtension(resolvedRoot, ['.js', '.ts', '.mjs', '.cjs'])) {
-    language = 'Node.js';
-    runtime = 'Node.js';
-  } else if (hasPythonMarker || hasAnyFileExtension(resolvedRoot, ['.py'])) {
-    language = 'Python';
-    runtime = 'Python';
-  }
-
-  return {
-    language,
-    framework: detectFramework(dependencies),
-    runtime,
-    package_manager: detectPackageManager(resolvedRoot)
-  };
-}
-
-function detectFramework(dependencies) {
-  if (dependencies.next) {
-    return 'Next.js';
-  }
-
-  if (dependencies.react) {
-    return 'React';
-  }
-
-  if (dependencies.express) {
-    return 'Express';
-  }
-
-  if (dependencies.fastify) {
-    return 'Fastify';
-  }
-
-  if (dependencies.koa) {
-    return 'Koa';
-  }
-
-  return '';
-}
-
-function buildStackLabel(techStack) {
-  const parts = [techStack.language, techStack.framework].filter(Boolean);
-  return parts.length > 0 ? parts.join(' + ') : 'Project';
-}
-
-function hasAnyFileExtension(projectRoot, extensions) {
-  return scanProjectFiles(projectRoot, 2).some((filePath) =>
-    extensions.includes(path.extname(filePath).toLowerCase())
-  );
-}
-
-function detectPackageManager(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-
-  if (fs.existsSync(path.join(resolvedRoot, 'pnpm-lock.yaml'))) {
-    return 'pnpm';
-  }
-
-  if (fs.existsSync(path.join(resolvedRoot, 'yarn.lock'))) {
-    return 'yarn';
-  }
-
-  return 'npm';
-}
-
-function scanProjectFiles(projectRoot, maxDepth, options) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const settings = Object.assign({ includeDirectories: null }, options);
-  const includeDirectories = settings.includeDirectories
-    ? new Set(settings.includeDirectories.map((entry) => normalizeProjectPath(entry).toLowerCase()))
-    : null;
-  const results = [];
-
-  function visit(currentDir, depth) {
-    if (depth > maxDepth || !isInsideProjectRoot(resolvedRoot, currentDir)) {
-      return;
-    }
-
-    let entries = [];
-
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch (error) {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-
-      if (!isInsideProjectRoot(resolvedRoot, fullPath)) {
-        continue;
-      }
-
-      const relativePath = normalizeProjectPath(path.relative(resolvedRoot, fullPath));
-
-      if (entry.isDirectory()) {
-        if (shouldIgnoreProjectFile(relativePath)) {
-          continue;
-        }
-
-        if (includeDirectories && depth === 0 && !includeDirectories.has(relativePath.toLowerCase())) {
-          continue;
-        }
-
-        visit(fullPath, depth + 1);
-        continue;
-      }
-
-      if (!shouldIgnoreProjectFile(relativePath)) {
-        results.push(relativePath);
-      }
-    }
-  }
-
-  visit(resolvedRoot, 0);
-  return results;
-}
+// ─────────────────────────────────────────────────────────────────
+//  Ignore / score
+// ─────────────────────────────────────────────────────────────────
 
 function shouldIgnoreProjectFile(filePath) {
-  const normalizedPath = normalizeProjectPath(filePath).toLowerCase();
-
-  if (!normalizedPath) {
-    return false;
-  }
-
-  const segments = normalizedPath.split('/').filter(Boolean);
-  const baseName = segments[segments.length - 1] || '';
-
-  if (segments.some((segment) => IGNORED_DIRECTORY_NAMES.has(segment))) {
-    return true;
-  }
-
-  if (baseName.startsWith('.start')) {
-    return true;
-  }
-
-  if (
-    baseName.endsWith('.log') ||
-    baseName.endsWith('.tmp') ||
-    baseName.endsWith('.lock') ||
-    baseName === 'package-lock.json' ||
-    baseName === 'yarn.lock' ||
-    baseName === 'pnpm-lock.yaml' ||
-    /^tmp[._-]/i.test(baseName) ||
-    /^temp[._-]/i.test(baseName) ||
-    /^debug[._-]/i.test(baseName)
-  ) {
-    return true;
-  }
-
+  const p    = normPath(filePath).toLowerCase();
+  if (!p)    return false;
+  const segs = p.split('/').filter(Boolean);
+  const base = segs[segs.length - 1] || '';
+  if (segs.some((s) => IGNORED_DIRS.has(s)))      return true;
+  if (base.startsWith('.'))                        return true;
+  if (/\.(log|tmp|lock)$/.test(base))              return true;
+  if (base === 'package-lock.json' || base === 'yarn.lock' || base === 'pnpm-lock.yaml') return true;
   return false;
 }
 
 function scoreEvent(filePath) {
-  const normalizedPath = normalizeProjectPath(filePath);
-  const lowerPath = normalizedPath.toLowerCase();
+  const p = normPath(filePath).toLowerCase();
+  if (shouldIgnoreProjectFile(p)) return -5;
   let score = 0;
-
-  if (shouldIgnoreProjectFile(normalizedPath)) {
-    return -5;
-  }
-
-  if (IMPORTANT_DIRECTORIES.some((directory) => lowerPath.startsWith(directory))) {
-    score += 3;
-  }
-
-  if (IMPORTANT_EXTENSIONS.has(path.extname(lowerPath))) {
-    score += 2;
-  }
-
-  if (lowerPath === 'package.json') {
-    score += 2;
-  }
-
-  if (lowerPath === 'readme.md') {
-    score += 1;
-  }
-
+  const firstSeg = p.split('/')[0];
+  if (IMPORTANT_DIRS.has(firstSeg))                score += 3;
+  if (CODE_EXTENSIONS.has(path.extname(p)))         score += 2;
+  if (p === 'package.json' || p === 'readme.md')    score += 2;
   return score;
 }
+
+// ─────────────────────────────────────────────────────────────────
+//  File scanning
+// ─────────────────────────────────────────────────────────────────
+
+function scanFiles(projectRoot, maxDepth) {
+  const root    = resolveRoot(projectRoot);
+  const results = [];
+  function visit(dir, depth) {
+    if (depth > maxDepth) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (!insideRoot(root, full)) continue;
+      const rel  = normPath(path.relative(root, full));
+      if (shouldIgnoreProjectFile(rel)) continue;
+      if (e.isDirectory()) { visit(full, depth + 1); continue; }
+      results.push(rel);
+    }
+  }
+  visit(root, 0);
+  return results;
+}
+
+function buildFileTree(projectRoot) {
+  const root = resolveRoot(projectRoot);
+  function visit(dir, depth) {
+    const node = {};
+    if (depth > MAX_TREE_DEPTH) return node;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return node; }
+    const dirs  = entries.filter((e) => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+    const files = entries.filter((e) => !e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+    for (const d of dirs) {
+      const full = path.join(dir, d.name);
+      const rel  = normPath(path.relative(root, full));
+      if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel)) continue;
+      node[d.name] = visit(full, depth + 1);
+    }
+    for (const f of files) {
+      const full = path.join(dir, f.name);
+      const rel  = normPath(path.relative(root, full));
+      if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel)) continue;
+      node[f.name] = null;
+    }
+    return node;
+  }
+  return visit(root, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Package.json / metadata
+// ─────────────────────────────────────────────────────────────────
+
+function readPkg(projectRoot) {
+  try { return JSON.parse(fs.readFileSync(path.join(resolveRoot(projectRoot), 'package.json'), 'utf8')); }
+  catch (_) { return null; }
+}
+
+function detectProjectMetadata(projectRoot) {
+  const root = resolveRoot(projectRoot);
+  const pkg  = readPkg(root);
+  const ts   = detectTechStack(root, pkg);
+  const pm   = detectPackageManager(root);
+  return {
+    project:       (pkg && pkg.name)    || path.basename(root),
+    version:       (pkg && pkg.version) || '0.1.0',
+    description:   (pkg && pkg.description) || '',
+    license:       (pkg && pkg.license)     || '',
+    author:        (pkg && pkg.author)      || '',
+    homepage:      (pkg && pkg.homepage)    || '',
+    repository:    extractRepoUrl(pkg),
+    techStack:     Object.assign({}, ts, { package_manager: pm }),
+    stackLabel:    [ts.language, ts.framework].filter(Boolean).join(' + ') || 'Project',
+    packageManager: pm
+  };
+}
+
+function extractRepoUrl(pkg) {
+  if (!pkg || !pkg.repository) return '';
+  return typeof pkg.repository === 'string' ? pkg.repository : (pkg.repository.url || '');
+}
+
+function detectTechStack(root, pkg) {
+  const deps = Object.assign({}, (pkg && pkg.dependencies) || {}, (pkg && pkg.devDependencies) || {});
+  const has  = (k) => Boolean(deps[k]);
+  const fileExists = (f) => fs.existsSync(path.join(root, f));
+
+  const hasPy = ['pyproject.toml','requirements.txt','setup.py'].some(fileExists);
+  let language = '', runtime = '';
+  if (pkg || anyFileExt(root, ['.js','.ts','.mjs'])) { language = 'Node.js'; runtime = 'Node.js'; }
+  else if (hasPy || anyFileExt(root, ['.py']))        { language = 'Python';  runtime = 'Python';  }
+
+  return {
+    language, runtime,
+    framework:      detectFramework(deps),
+    package_manager: detectPackageManager(root),
+    typescript:     Boolean(has('typescript') || fileExists('tsconfig.json')),
+    node_version:   (pkg && pkg.engines && pkg.engines.node) || '',
+    databases:      detectDatabases(deps),
+    test_framework: detectTestFw(deps, root),
+    bundler:        detectBundler(deps),
+    linter:         detectLinter(deps, root),
+    cloud_platform: detectCloud(root)
+  };
+}
+
+function anyFileExt(root, exts) {
+  return scanFiles(root, 2).some((f) => exts.includes(path.extname(f).toLowerCase()));
+}
+function detectPackageManager(root) {
+  if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(root, 'yarn.lock')))      return 'yarn';
+  if (fs.existsSync(path.join(root, 'bun.lockb')))      return 'bun';
+  return 'npm';
+}
+function detectFramework(d) {
+  if (d.next)           return 'Next.js';
+  if (d.nuxt)           return 'Nuxt';
+  if (d.react)          return 'React';
+  if (d.vue)            return 'Vue';
+  if (d.svelte)         return 'Svelte';
+  if (d.express)        return 'Express';
+  if (d.fastify)        return 'Fastify';
+  if (d.koa)            return 'Koa';
+  if (d['@nestjs/core'])return 'NestJS';
+  if (d.hono)           return 'Hono';
+  return '';
+}
+function detectDatabases(d) {
+  const r = [];
+  if (d.mongoose || d.mongodb)           r.push('MongoDB');
+  if (d.pg || d['pg-pool'])              r.push('PostgreSQL');
+  if (d.mysql || d.mysql2)              r.push('MySQL');
+  if (d.sqlite3 || d['better-sqlite3']) r.push('SQLite');
+  if (d.redis || d.ioredis)             r.push('Redis');
+  if (d['@prisma/client'])              r.push('Prisma');
+  if (d.sequelize)                      r.push('Sequelize');
+  if (d.typeorm)                        r.push('TypeORM');
+  if (d.knex)                           r.push('Knex');
+  return r;
+}
+function detectTestFw(d, root) {
+  if (d.jest || d['@jest/core']) return 'Jest';
+  if (d.vitest)  return 'Vitest';
+  if (d.mocha)   return 'Mocha';
+  if (d.jasmine) return 'Jasmine';
+  if (d.ava)     return 'AVA';
+  if (fs.existsSync(path.join(root, 'jest.config.js')))   return 'Jest';
+  if (fs.existsSync(path.join(root, 'vitest.config.js'))) return 'Vitest';
+  return '';
+}
+function detectBundler(d) {
+  if (d.webpack) return 'Webpack'; if (d.vite)    return 'Vite';
+  if (d.esbuild) return 'esbuild'; if (d.rollup)  return 'Rollup';
+  if (d.parcel)  return 'Parcel';  return '';
+}
+function detectLinter(d, root) {
+  if (d.eslint || fs.existsSync(path.join(root, '.eslintrc.js')) || fs.existsSync(path.join(root, '.eslintrc.json'))) return 'ESLint';
+  if (d.biome || fs.existsSync(path.join(root, 'biome.json')))   return 'Biome';
+  return '';
+}
+function detectCloud(root) {
+  const checks = [
+    ['vercel.json','Vercel'],['netlify.toml','Netlify'],['railway.json','Railway'],
+    ['fly.toml','Fly.io'],['render.yaml','Render'],['Dockerfile','Docker'],
+    ['docker-compose.yml','Docker Compose'],['serverless.yml','Serverless Framework']
+  ];
+  for (const [f, name] of checks) if (fs.existsSync(path.join(root, f))) return name;
+  if (fs.existsSync(path.join(root, '.github/workflows'))) return 'GitHub Actions';
+  return '';
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Dependency catalogue
+// ─────────────────────────────────────────────────────────────────
+
+function buildDependencyCatalogue(projectRoot) {
+  const pkg = readPkg(resolveRoot(projectRoot));
+  if (!pkg) return { production: {}, development: {}, peer: {}, scripts: {} };
+  return {
+    production:  pkg.dependencies    || {},
+    development: pkg.devDependencies || {},
+    peer:        pkg.peerDependencies || {},
+    scripts:     pkg.scripts         || {}
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Env variable scanning
+// ─────────────────────────────────────────────────────────────────
+
+function scanEnvVars(projectRoot) {
+  const root   = resolveRoot(projectRoot);
+  const vars   = new Set();
+  const files  = ['.env','.env.example','.env.sample','.env.local'];
+  for (const f of files) {
+    const fp = path.join(root, f);
+    if (!fs.existsSync(fp)) continue;
+    try {
+      for (const line of fs.readFileSync(fp, 'utf8').split('\n')) {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) continue;
+        const m = t.match(/^([A-Z0-9_]+)\s*=/);
+        if (m) vars.add(m[1]);
+      }
+    } catch (_) {}
+  }
+  // scan source for process.env refs
+  for (const rel of scanFiles(root, 4).slice(0, 60)) {
+    if (!['.js','.ts','.mjs','.cjs'].includes(path.extname(rel))) continue;
+    try {
+      const src = fs.readFileSync(path.join(root, rel), 'utf8');
+      for (const m of src.matchAll(/process\.env\.([A-Z0-9_]+)/g)) vars.add(m[1]);
+    } catch (_) {}
+  }
+  return Array.from(vars).sort();
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  API route extraction
+// ─────────────────────────────────────────────────────────────────
+
+function extractApiRoutes(projectRoot) {
+  const root   = resolveRoot(projectRoot);
+  const routes = [];
+  const seen   = new Set();
+  for (const rel of scanFiles(root, 4)) {
+    if (!['.js','.ts'].includes(path.extname(rel))) continue;
+    try {
+      const src = fs.readFileSync(path.join(root, rel), 'utf8');
+      const pat = /\b(?:router|app)\.(get|post|put|patch|delete|all)\s*\(\s*['"`]([^'"`]+)['"`]/gm;
+      let m;
+      while ((m = pat.exec(src)) !== null) {
+        const key = `${m[1].toUpperCase()}:${m[2]}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        routes.push({ method: m[1].toUpperCase(), path: m[2], file: rel });
+      }
+    } catch (_) {}
+  }
+  return routes;
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Issue tracker
+// ─────────────────────────────────────────────────────────────────
+
+function createDefaultIssueTracker() {
+  return {
+    active_errors:     [],
+    resolved_issues:   [],
+    last_error_at:     null,
+    last_resolved_at:  null,
+    total_errors_seen: 0,
+    total_resolved:    0
+  };
+}
+
+function applyErrorEvent(tracker, event) {
+  const t = Object.assign({}, createDefaultIssueTracker(), tracker);
+  const entry = {
+    id:        `err_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: event.timestamp || new Date().toISOString(),
+    message:   event.message   || 'Unknown error',
+    file:      event.file      || '',
+    stack:     event.stack     || '',
+    status:    'active'
+  };
+  return Object.assign({}, t, {
+    active_errors:     [entry, ...t.active_errors].slice(0, MAX_ACTIVE_ERRORS),
+    last_error_at:     entry.timestamp,
+    total_errors_seen: t.total_errors_seen + 1
+  });
+}
+
+function applyResolveEvent(tracker, event) {
+  const t   = Object.assign({}, createDefaultIssueTracker(), tracker);
+  const now = event.timestamp || new Date().toISOString();
+  let actives = [...t.active_errors];
+  let resolved = null;
+
+  const idx = actives.findIndex((e) =>
+    (event.errorId && e.id === event.errorId) ||
+    (event.message && e.message && e.message.toLowerCase().includes(event.message.toLowerCase()))
+  );
+
+  if (idx !== -1) {
+    resolved = Object.assign({}, actives[idx], {
+      status:      'resolved',
+      resolved_at: now,
+      resolution:  event.resolution || 'Marked resolved'
+    });
+    actives.splice(idx, 1);
+  } else {
+    resolved = {
+      id:          `res_${Date.now()}`,
+      timestamp:   now,
+      resolved_at: now,
+      message:     event.message    || 'Issue resolved',
+      resolution:  event.resolution || 'Marked resolved',
+      file:        event.file       || '',
+      status:      'resolved'
+    };
+  }
+
+  return Object.assign({}, t, {
+    active_errors:   actives,
+    resolved_issues: [resolved, ...t.resolved_issues].slice(0, MAX_RESOLVED_ISSUES),
+    last_resolved_at: now,
+    total_resolved:   t.total_resolved + 1
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Code change history  ← THE KEY NEW SECTION
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Given a file path and its old/new content snapshots,
+ * build a rich code change entry for the changelog.
+ */
+function buildCodeChangeEntry(relPath, oldContent, newContent, action, timestamp) {
+  const ext  = path.extname(relPath).toLowerCase();
+  const isCode = CODE_EXTENSIONS.has(ext);
+  const ts   = timestamp || new Date().toISOString();
+
+  if (action === 'delete') {
+    return {
+      id:           `chg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+      timestamp:    ts,
+      action:       'delete',
+      file:         relPath,
+      summary:      `Deleted ${relPath}`,
+      signals:      ['File removed from project'],
+      patch:        null,
+      lines_added:   0,
+      lines_removed: 0
+    };
+  }
+
+  if (action === 'add' && !oldContent) {
+    const lines = (newContent || '').split('\n').length;
+    const signals = isCode ? extractCodeSignals(
+      (newContent || '').split('\n').map((l) => `+${l}`).join('\n'),
+      relPath
+    ) : ['New file added'];
+    return {
+      id:            `chg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+      timestamp:     ts,
+      action:        'add',
+      file:          relPath,
+      summary:       `Added ${relPath} (${lines} lines)`,
+      signals,
+      patch:         null,
+      lines_added:   lines,
+      lines_removed: 0
+    };
+  }
+
+  // change – produce real diff
+  const old_ = oldContent || '';
+  const new_ = newContent || '';
+
+  if (old_ === new_) return null; // no actual change
+
+  const { patch, linesAdded, linesRemoved, summary } = diffTexts(old_, new_, relPath);
+  const signals = isCode ? extractCodeSignals(patch, relPath) : ['File updated'];
+
+  return {
+    id:            `chg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    timestamp:     ts,
+    action:        'change',
+    file:          relPath,
+    summary,
+    signals,
+    patch:         patch.length > 8000 ? patch.slice(0, 8000) + '\n[patch truncated]' : patch,
+    lines_added:   linesAdded,
+    lines_removed: linesRemoved
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Bootstrap project analysis
+// ─────────────────────────────────────────────────────────────────
+
+function bootstrapProjectAnalysis(projectRoot) {
+  const root     = resolveRoot(projectRoot);
+  const meta     = detectProjectMetadata(root);
+  const pkg      = readPkg(root);
+  const ts       = meta.techStack;
+  const files    = scanFiles(root, 4);
+  const inputs   = collectAnalysisInputs(root, files);
+  const signals  = detectSignals(inputs, pkg, ts);
+  return {
+    projectType:            inferProjectType(signals, ts, pkg),
+    techStack:              ts,
+    architecturePatterns:   buildArchPatterns(signals, ts, pkg),
+    implementationDetails:  buildImplDetails(signals, ts),
+    keyFeatures:            buildKeyFeatures(signals, ts),
+    signals
+  };
+}
+
+function collectAnalysisInputs(root, files) {
+  const important = new Set([
+    'package.json','app.js','app.ts','index.js','index.ts','main.py'
+  ]);
+  const importantDirs = new Set(['routes','server','controllers','services','middleware','config','src','core','bin','lib','api','utils']);
+  // Exclude aibridge's own infrastructure files — they contain detection
+  // strings (e.g. /new PrismaClient/) that would create false positives
+  // when the tool analyses itself.
+  const SELF_FILES = new Set([
+    'core/stateManager.js','core/codeDiff.js','core/fileSnapshot.js',
+    'core/watcher.js','core/gitSync.js','core/init.js',
+    'bin/cli.js','utils/logger.js'
+  ]);
+  const selected = files.filter((f) => {
+    if (SELF_FILES.has(f)) return false;
+    if (important.has(f)) return true;
+    const seg = f.split('/')[0];
+    return importantDirs.has(seg);
+  });
+  return selected.slice(0, 80).map((rel) => {
+    try {
+      const content = fs.readFileSync(path.join(root, rel), 'utf8').slice(0, 50000);
+      return { path: rel, content };
+    } catch (_) { return null; }
+  }).filter(Boolean);
+}
+
+function detectSignals(inputs, pkg, ts) {
+  const deps = Object.assign({}, (pkg && pkg.dependencies) || {}, (pkg && pkg.devDependencies) || {});
+  const all  = inputs.map((i) => i.content).join('\n');
+  const has  = (p) => p.test(all);
+  const dep  = (k) => Boolean(deps[k]);
+  const hasDir = (d) => inputs.some((i) => i.path.startsWith(d + '/'));
+
+  return {
+    hasPackageJson:    Boolean(pkg),
+    hasCliEntry:       Boolean(pkg && pkg.bin && Object.keys(pkg.bin).length) || has(/\bprocess\.argv\b/),
+    hasExpress:        dep('express') || has(/require\(['"]express['"]\)/) || has(/\bexpress\(\)/),
+    hasNext:           dep('next'),
+    hasReact:          dep('react'),
+    hasFastify:        dep('fastify'),
+    hasNest:           dep('@nestjs/core'),
+    hasRestRoutes:     has(/\b(router|app)\.(get|post|put|patch|delete)\s*\(/),
+    hasMiddleware:     has(/\bapp\.use\s*\(/) || hasDir('middleware'),
+    hasJwt:            dep('jsonwebtoken') || has(/\bjwt\.(sign|verify)/),
+    hasMongoose:       dep('mongoose') || has(/mongoose\.connect/),
+    hasPrisma:         dep('@prisma/client') || has(/new PrismaClient/),
+    hasSocketIO:       dep('socket.io') || has(/require\(['"]socket\.io['"]\)/),
+    hasAxiosOrFetch:   dep('axios') || has(/\baxios\./) || has(/\bfetch\s*\(/),
+    hasWatcher:        dep('chokidar') || has(/chokidar\.watch/),
+    hasGitAutomation:  has(/\bgit\s+(add|commit|push)\b/) || has(/syncContextToGit/),
+    hasAiArtifacts:    has(/state\.json/) && has(/brain\.txt/),
+    hasControllers:    hasDir('controllers'),
+    hasServices:       hasDir('services'),
+    hasRoutes:         hasDir('routes'),
+    hasServerDir:      hasDir('server'),
+    hasConfigDir:      hasDir('config'),
+    hasTests:          hasDir('test') || hasDir('tests') || hasDir('__tests__') || dep('jest') || dep('vitest') || dep('mocha'),
+    hasRedis:          dep('redis') || dep('ioredis'),
+    hasQueue:          dep('bull') || dep('bullmq'),
+    hasEmail:          dep('nodemailer') || dep('@sendgrid/mail') || dep('resend'),
+    hasGraphQL:        dep('graphql') || dep('@apollo/server'),
+    hasTypeScript:     ts.typescript
+  };
+}
+
+function inferProjectType(s, ts, pkg) {
+  if (s.hasNext)                       return 'Next.js application';
+  if (s.hasCliEntry && s.hasAiArtifacts) return 'CLI tool';
+  if (s.hasExpress && s.hasRestRoutes) return 'backend API platform';
+  if (s.hasReact)                      return 'frontend application';
+  if (ts.language === 'Python')        return 'Python application';
+  if (pkg && pkg.bin)                  return 'CLI tool';
+  return 'Node.js application';
+}
+
+function buildArchPatterns(s, ts, pkg) {
+  const p = [];
+  if (s.hasCliEntry)                         p.push('Command-line automation workflow');
+  if (s.hasWatcher)                          p.push('Event-driven file watching pipeline');
+  if (s.hasExpress && s.hasRestRoutes)       p.push('REST API architecture');
+  if (s.hasMiddleware)                       p.push('Middleware-driven request pipeline');
+  if (s.hasControllers && s.hasServices)     p.push('Layered controller-service architecture');
+  if (s.hasServerDir && s.hasRoutes)         p.push('Separated server bootstrap and route handling');
+  if (s.hasSocketIO)                         p.push('Real-time event architecture');
+  if (s.hasNest)                             p.push('NestJS modular architecture');
+  if (s.hasGraphQL)                          p.push('GraphQL API layer');
+  if (s.hasPrisma || s.hasMongoose)          p.push('Database-backed persistence layer');
+  if (s.hasRedis)                            p.push('Redis-backed caching or session layer');
+  if (s.hasAiArtifacts && s.hasExpress)      p.push('Structured AI context delivery workflow');
+  if (pkg && Array.isArray(pkg.keywords) && pkg.keywords.includes('cli')) p.push('Package-distributed CLI architecture');
+  return uniq(p).slice(0, 8);
+}
+
+function buildImplDetails(s, ts) {
+  const d = [];
+  if (s.hasJwt)                          d.push('JWT-based authentication');
+  if (s.hasMongoose)                     d.push('MongoDB via Mongoose ORM');
+  if (s.hasPrisma)                       d.push('Type-safe database access via Prisma');
+  if (s.hasExpress && s.hasRestRoutes)   d.push('REST API with Express routing');
+  if (s.hasMiddleware)                   d.push('Express middleware pipeline');
+  if (s.hasSocketIO)                     d.push('Socket.IO real-time communication');
+  if (s.hasAxiosOrFetch)                 d.push('External API integration');
+  if (s.hasWatcher)                      d.push('Debounced file-system event watcher');
+  if (s.hasAiArtifacts)                  d.push('Structured AI context generation (state.json, brain.txt, context.md, changelog.json)');
+  if (s.hasGitAutomation)                d.push('Git-backed context sync workflow');
+  if (s.hasCliEntry)                     d.push('Node.js CLI entrypoint');
+  if (s.hasGraphQL)                      d.push('GraphQL schema and resolvers');
+  if (s.hasRedis)                        d.push('Redis caching layer');
+  if (s.hasQueue)                        d.push('Background job queue');
+  if (s.hasEmail)                        d.push('Transactional email delivery');
+  if (s.hasTests)                        d.push('Automated test suite');
+  return uniq(d).slice(0, MAX_IMPL_DETAILS);
+}
+
+function buildKeyFeatures(s, ts) {
+  const f = [];
+  if (s.hasAiArtifacts)    f.push('AI-readable project context generation');
+  if (s.hasCliEntry)       f.push('CLI automation workflow');
+  if (s.hasWatcher)        f.push('Automatic change tracking');
+  if (s.hasGitAutomation)  f.push('Optional GitHub sync for public AI access');
+  if (s.hasExpress && s.hasAiArtifacts) f.push('Local HTTP context server');
+  else if (s.hasExpress)   f.push('REST API');
+  if (s.hasJwt)            f.push('Authentication');
+  if (s.hasMongoose || s.hasPrisma) f.push('Data persistence');
+  if (s.hasSocketIO)       f.push('Real-time communication');
+  if (s.hasAxiosOrFetch)   f.push('External API integration');
+  if (s.hasTests)          f.push('Automated testing');
+  if (s.hasGraphQL)        f.push('GraphQL API');
+  if (s.hasEmail)          f.push('Email notifications');
+  return uniq(f).slice(0, MAX_KEY_FEATURES);
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Default state / changelog
+// ─────────────────────────────────────────────────────────────────
+
+function createDefaultChangelog() { return { entries: [] }; }
+
+function createDefaultState(projectRoot) {
+  const root     = resolveRoot(projectRoot);
+  const meta     = detectProjectMetadata(root);
+  const boot     = bootstrapProjectAnalysis(root);
+  const fileList = scanFiles(root, MAX_TREE_DEPTH);
+
+  const state = {
+    project:     meta.project,
+    version:     meta.version,
+    description: meta.description,
+    author:      meta.author,
+    license:     meta.license,
+    homepage:    meta.homepage,
+    repository:  meta.repository,
+
+    last_updated:           new Date().toISOString(),
+    ai_summary:             '',
+    tech_stack:             boot.techStack,
+    architecture_patterns:  boot.architecturePatterns,
+    implementation_details: boot.implementationDetails,
+    current_stage:          stageFromFeatures(boot.keyFeatures, boot.implementationDetails),
+    recent_updates:         [],
+    key_features:           boot.keyFeatures,
+    known_issues:           [],
+    next_steps:             [],
+
+    // File structure
+    file_tree:    buildFileTree(root),
+    file_list:    fileList,
+
+    // Code catalogue: every file's exports/imports/functions
+    code_files:   buildCodeFileCatalogue(root, fileList),
+
+    // Full code change history with real diffs
+    code_changes: [],
+
+    // API surface
+    api_routes:   extractApiRoutes(root),
+
+    // Dependencies
+    dependencies: buildDependencyCatalogue(root),
+
+    // Environment
+    env_variables: scanEnvVars(root),
+
+    // Error / issue tracking
+    issue_tracker: createDefaultIssueTracker(),
+
+    // Working context (manually set or updated via CLI)
+    current_focus:  '',
+    working_branch: '',
+    open_questions: [],
+    decisions_made: [],
+    session_notes:  []
+  };
+
+  state.ai_summary = genAiSummary(state, boot);
+  state.next_steps  = genNextSteps(state, boot);
+  return state;
+}
+
+function stageFromFeatures(features, details) {
+  if (features.length >= 4 && details.length >= 3) return 'Production-ready';
+  if (features.length >= 2)                         return 'Functional prototype';
+  return 'Early development';
+}
+
+function genAiSummary(state, boot) {
+  const type  = cap(boot.projectType || 'Project');
+  const feats = (state.key_features || []).slice(0, 3).join(', ').toLowerCase();
+  const db    = state.tech_stack.databases && state.tech_stack.databases.length
+    ? ` backed by ${state.tech_stack.databases.join(', ')}`
+    : '';
+  if (feats) return `${type}${db} with: ${feats}.`;
+  return `${type}${db}.`;
+}
+
+function genNextSteps(state, boot) {
+  const steps = [];
+  if (!state.tech_stack.test_framework && !boot.signals.hasTests) steps.push('Add automated tests');
+  if (boot.implementationDetails.length < 2)  steps.push('Expand project structure so more patterns are detectable');
+  if (state.current_stage === 'Early development') steps.push('Ship next core capability to reach functional prototype stage');
+  return steps.slice(0, 4);
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  I/O helpers
+// ─────────────────────────────────────────────────────────────────
 
 async function ensureContextDirectory(projectRoot) {
   const { contextDir } = getContextPaths(projectRoot);
@@ -358,1194 +752,234 @@ async function ensureContextDirectory(projectRoot) {
   return contextDir;
 }
 
-async function readJsonFile(filePath, fallbackValue) {
-  try {
-    const raw = await fsp.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch (error) {
-    return fallbackValue;
-  }
+async function readJsonFile(filePath, fallback) {
+  try { return JSON.parse(await fsp.readFile(filePath, 'utf8')); }
+  catch (_) { return fallback; }
 }
 
 async function writeJsonAtomic(filePath, value) {
-  const content = `${JSON.stringify(value, null, 2)}\n`;
-  await writeTextAtomic(filePath, content);
+  await writeTextAtomic(filePath, JSON.stringify(value, null, 2) + '\n');
 }
 
 async function writeTextAtomic(filePath, content) {
-  const tempFilePath = `${filePath}.tmp`;
+  const tmp = `${filePath}.tmp`;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(tempFilePath, content, 'utf8');
-  await fsp.rename(tempFilePath, filePath);
+  await fsp.writeFile(tmp, content, 'utf8');
+  await fsp.rename(tmp, filePath);
 }
 
-function renderTemplate(template, variables) {
-  return Object.entries(variables).reduce((accumulator, [key, value]) => {
-    const safeValue = value == null ? '' : String(value);
-    return accumulator.split(`{{${key}}}`).join(safeValue);
-  }, template);
+function renderTemplate(template, vars) {
+  return Object.entries(vars).reduce((acc, [k, v]) =>
+    acc.split(`{{${k}}}`).join(v == null ? '' : String(v)), template);
 }
 
-function createDefaultChangelog() {
-  return {
-    entries: []
-  };
-}
-
-function createDefaultState(projectRoot) {
-  const metadata = detectProjectMetadata(projectRoot);
-  const bootstrap = bootstrapProjectAnalysis(projectRoot);
-  const state = {
-    project: metadata.project,
-    version: metadata.version,
-    last_updated: new Date(0).toISOString(),
-    ai_summary: '',
-    tech_stack: bootstrap.techStack,
-    architecture_patterns: bootstrap.architecturePatterns,
-    implementation_details: bootstrap.implementationDetails,
-    current_stage: determineCurrentStage(bootstrap.keyFeatures, [], bootstrap.implementationDetails),
-    recent_updates: [],
-    key_features: bootstrap.keyFeatures,
-    known_issues: deriveKnownIssues(projectRoot, bootstrap),
-    next_steps: []
-  };
-
-  state.ai_summary = generateAiSummary(state, bootstrap);
-  state.next_steps = generateNextSteps(state, bootstrap, []);
-
-  return state;
-}
-
-function mergePreferredArray(preferredValue, fallbackValue) {
-  if (Array.isArray(preferredValue) && preferredValue.length > 0) {
-    return preferredValue;
-  }
-
-  if (Array.isArray(fallbackValue) && fallbackValue.length > 0) {
-    return fallbackValue;
-  }
-
-  return [];
-}
-
-function mergePreferredObject(preferredValue, fallbackValue) {
-  const preferredObject = isObject(preferredValue) ? preferredValue : {};
-  const fallbackObject = isObject(fallbackValue) ? fallbackValue : {};
-
-  return Object.assign({}, fallbackObject, preferredObject);
-}
-
-function composeStateFromAnalysis(existingState, metadata, bootstrap, overrides) {
-  const baseState = isObject(existingState) ? existingState : {};
-  const nextState = Object.assign(
-    {
-      project: metadata.project,
-      version: metadata.version,
-      last_updated: baseState.last_updated || new Date(0).toISOString(),
-      ai_summary: '',
-      tech_stack: mergePreferredObject(bootstrap.techStack, baseState.tech_stack),
-      architecture_patterns: mergePreferredArray(
-        bootstrap.architecturePatterns,
-        baseState.architecture_patterns
-      ),
-      implementation_details: mergePreferredArray(
-        bootstrap.implementationDetails,
-        baseState.implementation_details
-      ),
-      current_stage: '',
-      recent_updates: Array.isArray(baseState.recent_updates) ? baseState.recent_updates : [],
-      key_features: mergePreferredArray(bootstrap.keyFeatures, baseState.key_features),
-      known_issues: [],
-      next_steps: []
-    },
-    overrides || {}
-  );
-
-  return nextState;
-}
-
-function bootstrapProjectAnalysis(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const metadata = detectProjectMetadata(resolvedRoot);
-  const rootPackage = readRootPackageJson(resolvedRoot);
-  const techStack = metadata.techStack;
-  const analysisInputs = collectAnalysisInputs(resolvedRoot);
-  const implementationSignals = detectImplementationSignals(analysisInputs, rootPackage, techStack);
-  const architecturePatterns = buildArchitecturePatterns(
-    implementationSignals,
-    analysisInputs,
-    techStack,
-    rootPackage
-  );
-  const implementationDetails = buildImplementationDetails(implementationSignals, techStack);
-  const keyFeatures = buildKeyFeatures(implementationSignals, techStack);
-  const projectType = determineProjectType(implementationSignals, techStack, rootPackage);
-
-  return {
-    projectType,
-    techStack,
-    architecturePatterns,
-    implementationDetails,
-    keyFeatures,
-    signals: implementationSignals
-  };
-}
-
-function collectAnalysisInputs(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const selectedFiles = new Set();
-
-  for (const relativeFile of ANALYSIS_ROOT_FILES) {
-    const absoluteFile = path.join(resolvedRoot, relativeFile);
-
-    if (fs.existsSync(absoluteFile) && isInsideProjectRoot(resolvedRoot, absoluteFile)) {
-      selectedFiles.add(relativeFile);
-    }
-  }
-
-  const discoveredFiles = scanProjectFiles(resolvedRoot, 4, {
-    includeDirectories: ANALYSIS_DIRECTORIES
-  });
-
-  for (const relativeFile of discoveredFiles) {
-    selectedFiles.add(relativeFile);
-  }
-
-  return Array.from(selectedFiles)
-    .sort()
-    .map((relativeFile) => {
-      const absoluteFile = path.join(resolvedRoot, relativeFile);
-
-      try {
-        const content = fs.readFileSync(absoluteFile, 'utf8');
-        return {
-          path: relativeFile,
-          content: content.slice(0, 50000)
-        };
-      } catch (error) {
-        return null;
-      }
-    })
-    .filter(Boolean);
-}
-
-function detectImplementationSignals(analysisInputs, rootPackage, techStack) {
-  const dependencyNames = new Set([
-    ...Object.keys((rootPackage && rootPackage.dependencies) || {}),
-    ...Object.keys((rootPackage && rootPackage.devDependencies) || {})
-  ]);
-  const runtimeInputs = analysisInputs.filter((input) => isRuntimeImplementationFile(input.path));
-  const automationInputs = analysisInputs.filter((input) => isAutomationImplementationFile(input.path));
-  const runtimeContent = runtimeInputs.map((input) => input.content).join('\n');
-  const automationContent = automationInputs.map((input) => input.content).join('\n');
-  const allContent = analysisInputs.map((input) => input.content).join('\n');
-  const hasDirectory = (directoryName) =>
-    analysisInputs.some((input) => normalizeProjectPath(input.path).startsWith(`${directoryName}/`));
-  const hasRuntimePattern = (pattern) => pattern.test(runtimeContent);
-  const hasAutomationPattern = (pattern) => pattern.test(automationContent);
-  const hasAnyPattern = (pattern) => pattern.test(allContent);
-
-  return {
-    hasPackageJson: Boolean(rootPackage),
-    hasCliEntry:
-      Boolean(rootPackage && rootPackage.bin && Object.keys(rootPackage.bin).length > 0) ||
-      hasAutomationPattern(/^#!\/usr\/bin\/env node/m) ||
-      hasAutomationPattern(/\bprocess\.argv\b/),
-    hasExpress:
-      dependencyNames.has('express') ||
-      hasRuntimePattern(/\brequire\(['"]express['"]\)/) ||
-      hasRuntimePattern(/\bfrom ['"]express['"]/) ||
-      hasRuntimePattern(/\bexpress\(\)/),
-    hasNext: dependencyNames.has('next'),
-    hasReact: dependencyNames.has('react'),
-    hasFastify: dependencyNames.has('fastify'),
-    hasKoa: dependencyNames.has('koa'),
-    hasRestRoutes: hasRuntimePattern(/\b(router|app)\.(get|post|put|patch|delete)\s*\(/),
-    hasMiddleware: hasRuntimePattern(/\bapp\.use\s*\(/) || hasDirectory('middleware'),
-    hasJwt:
-      dependencyNames.has('jsonwebtoken') ||
-      hasRuntimePattern(/\bjwt\.(sign|verify)\s*\(/) ||
-      hasRuntimePattern(/\brequire\(['"]jsonwebtoken['"]\)/),
-    hasMongoose:
-      dependencyNames.has('mongoose') ||
-      hasRuntimePattern(/\bmongoose\.connect\s*\(/) ||
-      hasRuntimePattern(/\brequire\(['"]mongoose['"]\)/),
-    hasSocketIO:
-      dependencyNames.has('socket.io') ||
-      hasRuntimePattern(/\bsocket\.io\b/) ||
-      hasRuntimePattern(/\brequire\(['"]socket\.io['"]\)/),
-    hasAxiosOrFetch:
-      dependencyNames.has('axios') ||
-      hasRuntimePattern(/\baxios\./) ||
-      hasRuntimePattern(/\bfetch\s*\(/),
-    hasWatcher:
-      dependencyNames.has('chokidar') ||
-      hasAutomationPattern(/\bchokidar\.watch\s*\(/) ||
-      hasAutomationPattern(/\bfs\.watch\s*\(/),
-    hasGitAutomation:
-      hasAutomationPattern(/\bgit\s+(add|commit|push)\b/) ||
-      hasAutomationPattern(/\b(syncContextToGit|linkGithubRepository)\b/),
-    hasAiContextArtifacts:
-      hasAutomationPattern(/\bstate\.json\b/) ||
-      hasAutomationPattern(/\bbrain\.txt\b/) ||
-      hasAutomationPattern(/\bcontext\.md\b/) ||
-      hasAutomationPattern(/\bchangelog\.json\b/),
-    hasControllers: hasDirectory('controllers'),
-    hasServices: hasDirectory('services'),
-    hasRoutes: hasDirectory('routes'),
-    hasServerDirectory: hasDirectory('server'),
-    hasConfigDirectory: hasDirectory('config'),
-    hasTypeScriptConfig: analysisInputs.some((input) => input.path === 'tsconfig.json'),
-    hasPythonRequirements: analysisInputs.some((input) => input.path === 'requirements.txt'),
-    hasNodeRuntime: techStack.language === 'Node.js',
-    hasPythonRuntime: techStack.language === 'Python',
-    hasApplicationEntries: runtimeInputs.length > 0,
-    hasAnyContent: hasAnyPattern(/\S/)
-  };
-}
-
-function isRuntimeImplementationFile(relativePath) {
-  const normalizedPath = normalizeProjectPath(relativePath).toLowerCase();
-
-  return (
-    normalizedPath.startsWith('routes/') ||
-    normalizedPath.startsWith('server/') ||
-    normalizedPath.startsWith('controllers/') ||
-    normalizedPath.startsWith('services/') ||
-    normalizedPath.startsWith('middleware/') ||
-    normalizedPath.startsWith('config/') ||
-    normalizedPath.startsWith('src/') ||
-    normalizedPath === 'app.js' ||
-    normalizedPath === 'app.ts' ||
-    normalizedPath === 'index.js' ||
-    normalizedPath === 'index.ts' ||
-    normalizedPath === 'main.py'
-  );
-}
-
-function isAutomationImplementationFile(relativePath) {
-  const normalizedPath = normalizeProjectPath(relativePath).toLowerCase();
-
-  return (
-    normalizedPath.startsWith('core/') ||
-    normalizedPath.startsWith('bin/') ||
-    normalizedPath === 'package.json' ||
-    normalizedPath === 'index.js' ||
-    normalizedPath === 'index.ts'
-  );
-}
-
-function buildArchitecturePatterns(signals, analysisInputs, techStack, rootPackage) {
-  const patterns = [];
-
-  if (signals.hasCliEntry) {
-    patterns.push('Command-line automation workflow');
-  }
-
-  if (signals.hasWatcher) {
-    patterns.push('Event-driven file watching pipeline');
-  }
-
-  if (signals.hasExpress && signals.hasRestRoutes) {
-    patterns.push('REST API architecture');
-  }
-
-  if (signals.hasMiddleware) {
-    patterns.push('Middleware-driven request pipeline');
-  }
-
-  if (signals.hasControllers && signals.hasServices) {
-    patterns.push('Layered controller-service architecture');
-  }
-
-  if (signals.hasServerDirectory && signals.hasRoutes) {
-    patterns.push('Separated server bootstrap and route handling');
-  }
-
-  if (signals.hasConfigDirectory) {
-    patterns.push('Centralized configuration layer');
-  }
-
-  if (signals.hasSocketIO) {
-    patterns.push('Real-time event architecture');
-  }
-
-  if (signals.hasNext) {
-    patterns.push('Framework-driven web application structure');
-  } else if (signals.hasReact) {
-    patterns.push('Component-based frontend architecture');
-  }
-
-  if (
-    signals.hasAiContextArtifacts &&
-    signals.hasExpress &&
-    analysisInputs.some((input) => /\bstate\.json\b|\bbrain\.txt\b|\bcontext\.md\b/.test(input.content))
-  ) {
-    patterns.push('Structured AI context delivery workflow');
-  }
-
-  if (rootPackage && Array.isArray(rootPackage.keywords) && rootPackage.keywords.includes('cli')) {
-    patterns.push('Package-distributed CLI architecture');
-  }
-
-  return uniqueNonEmpty(patterns).slice(0, 6);
-}
-
-function buildImplementationDetails(signals, techStack) {
-  const details = [];
-
-  if (signals.hasJwt) {
-    details.push('JWT-based authentication system');
-  }
-
-  if (signals.hasMongoose) {
-    details.push('MongoDB integration through Mongoose ORM');
-  }
-
-  if (signals.hasExpress && signals.hasRestRoutes) {
-    details.push('REST API architecture using Express routing');
-  }
-
-  if (signals.hasMiddleware) {
-    details.push('Express middleware pipeline for request handling');
-  }
-
-  if (signals.hasSocketIO) {
-    details.push('Socket.IO-based real-time communication');
-  }
-
-  if (signals.hasAxiosOrFetch) {
-    details.push('External API integration for outbound service calls');
-  }
-
-  if (signals.hasWatcher) {
-    details.push('File system monitoring for automatic project state updates');
-  }
-
-  if (signals.hasAiContextArtifacts) {
-    details.push('Structured AI context generation across JSON, Markdown, and instruction files');
-  }
-
-  if (signals.hasGitAutomation) {
-    details.push('Git-backed synchronization workflow for publishing project state');
-  }
-
-  if (signals.hasCliEntry && techStack.language === 'Node.js') {
-    details.push('Node.js CLI entrypoint for developer-facing automation');
-  }
-
-  return uniqueNonEmpty(details).slice(0, MAX_IMPLEMENTATION_DETAILS);
-}
-
-function buildKeyFeatures(signals, techStack) {
-  const features = [];
-
-  if (signals.hasAiContextArtifacts) {
-    features.push(FEATURE_CATALOG.ai_context_generation);
-  }
-
-  if (signals.hasCliEntry) {
-    features.push(FEATURE_CATALOG.cli_automation);
-  }
-
-  if (signals.hasWatcher) {
-    features.push(FEATURE_CATALOG.change_tracking);
-  }
-
-  if (signals.hasGitAutomation) {
-    features.push(FEATURE_CATALOG.public_sync);
-  }
-
-  if (signals.hasExpress && signals.hasAiContextArtifacts) {
-    features.push(FEATURE_CATALOG.local_context_server);
-  } else if (signals.hasExpress && signals.hasRestRoutes) {
-    features.push(FEATURE_CATALOG.rest_api);
-  }
-
-  if (signals.hasJwt) {
-    features.push(FEATURE_CATALOG.auth);
-  }
-
-  if (signals.hasMongoose) {
-    features.push(FEATURE_CATALOG.persistence);
-  }
-
-  if (signals.hasSocketIO) {
-    features.push(FEATURE_CATALOG.realtime);
-  }
-
-  if (signals.hasAxiosOrFetch) {
-    features.push(FEATURE_CATALOG.external_api);
-  }
-
-  if (signals.hasMiddleware) {
-    features.push(FEATURE_CATALOG.middleware);
-  }
-
-  if (signals.hasConfigDirectory) {
-    features.push(FEATURE_CATALOG.config_management);
-  }
-
-  if (features.length === 0 && techStack.language) {
-    features.push(`${techStack.language} project structure with detectable application entry points`);
-  }
-
-  return uniqueNonEmpty(features).slice(0, MAX_KEY_FEATURES);
-}
-
-function determineProjectType(signals, techStack, rootPackage) {
-  if (signals.hasNext) {
-    return 'Next.js application';
-  }
-
-  if (signals.hasCliEntry && signals.hasAiContextArtifacts) {
-    return 'CLI tool';
-  }
-
-  if (signals.hasExpress && signals.hasRestRoutes) {
-    return 'backend API platform';
-  }
-
-  if (signals.hasReact) {
-    return 'frontend application';
-  }
-
-  if (signals.hasPythonRuntime) {
-    return 'Python application';
-  }
-
-  if (rootPackage && rootPackage.bin) {
-    return 'CLI tool';
-  }
-
-  if (techStack.language === 'Node.js') {
-    return 'Node.js application';
-  }
-
-  return 'software project';
-}
+// ─────────────────────────────────────────────────────────────────
+//  Runtime config
+// ─────────────────────────────────────────────────────────────────
 
 async function loadRuntimeConfig(projectRoot) {
   const { configFile } = getContextPaths(projectRoot);
-  const userConfig = await readJsonFile(configFile, {});
-  return deepMerge(DEFAULT_CONFIG, userConfig);
+  return deepMerge(DEFAULT_CONFIG, await readJsonFile(configFile, {}));
 }
 
 async function updateRuntimeConfig(projectRoot, updates) {
   const { configFile } = getContextPaths(projectRoot);
-  const currentConfig = await readJsonFile(configFile, {});
-  const mergedCurrentConfig = deepMerge(DEFAULT_CONFIG, currentConfig);
-  const nextConfig = deepMerge(mergedCurrentConfig, updates || {});
-
-  await writeJsonAtomic(configFile, nextConfig);
-  return nextConfig;
+  const cur  = await readJsonFile(configFile, {});
+  const next = deepMerge(deepMerge(DEFAULT_CONFIG, cur), updates || {});
+  await writeJsonAtomic(configFile, next);
+  return next;
 }
 
+// ─────────────────────────────────────────────────────────────────
+//  MAIN STATE UPDATER
+// ─────────────────────────────────────────────────────────────────
+
 async function updateProjectState(projectRoot, changeEvent, options) {
-  const settings = Object.assign(
-    {
-      logger: null,
-      syncCallback: null
-    },
-    options
-  );
-  const logger = settings.logger;
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const contextPaths = getContextPaths(resolvedRoot);
-  const metadata = detectProjectMetadata(resolvedRoot);
-  const bootstrap = bootstrapProjectAnalysis(resolvedRoot);
-  const existingState = await readJsonFile(contextPaths.stateFile, createDefaultState(resolvedRoot));
-  const existingChangelog = await readJsonFile(
-    contextPaths.changelogFile,
-    createDefaultChangelog()
-  );
-  const normalizedEvents = Array.isArray(changeEvent) ? changeEvent : [changeEvent];
-  const validEvents = normalizedEvents.filter(Boolean);
-  const timestamp = determineUpdateTimestamp(validEvents);
-  const meaningfulEvents = collapseEventsByFile(validEvents.filter((event) => isMeaningfulEvent(event)));
-  const groupedUpdates = groupEventsByIntent(meaningfulEvents, bootstrap);
-  const previousHistoryEntries = normalizeStoredHistoryEntries(existingChangelog.entries);
-  const historyEntries = dedupeHistoryEntries(groupedUpdates.concat(previousHistoryEntries))
-    .slice(0, MAX_CHANGELOG_ENTRIES);
-  const promotedFeatures = promoteFeatures(historyEntries);
-  const keyFeatures = mergeKeyFeatures(bootstrap.keyFeatures, promotedFeatures);
-  const recentUpdates = groupedUpdates.length > 0
-    ? dedupeRecentUpdates(groupedUpdates.map(toStateUpdate).concat(normalizeStoredUpdates(existingState.recent_updates)))
-        .slice(0, MAX_RECENT_UPDATES)
-    : normalizeStoredUpdates(existingState.recent_updates).slice(0, MAX_RECENT_UPDATES);
-  const mergedArchitecturePatterns = mergePreferredArray(
-    bootstrap.architecturePatterns,
-    existingState.architecture_patterns
-  );
-  const mergedImplementationDetails = mergePreferredArray(
-    bootstrap.implementationDetails,
-    existingState.implementation_details
-  );
-  const nextState = composeStateFromAnalysis(existingState, metadata, bootstrap, {
-    last_updated: timestamp,
-    tech_stack: mergePreferredObject(bootstrap.techStack, existingState.tech_stack),
-    architecture_patterns: mergedArchitecturePatterns,
-    implementation_details: mergedImplementationDetails,
-    current_stage: determineCurrentStage(
-      keyFeatures,
-      historyEntries,
-      mergedImplementationDetails
-    ),
-    recent_updates: recentUpdates,
-    key_features: keyFeatures,
-    known_issues: deriveKnownIssues(resolvedRoot, Object.assign({}, bootstrap, {
-      architecturePatterns: mergedArchitecturePatterns,
-      implementationDetails: mergedImplementationDetails,
-      keyFeatures
-    })),
-    next_steps: []
-  });
+  const settings = Object.assign({ logger: null, syncCallback: null }, options);
+  const log      = settings.logger;
+  const root     = resolveRoot(projectRoot);
+  const paths    = getContextPaths(root);
 
-  nextState.ai_summary = generateAiSummary(nextState, bootstrap);
-  nextState.next_steps = generateNextSteps(nextState, bootstrap, historyEntries);
+  const existing    = await readJsonFile(paths.stateFile,     createDefaultState(root));
+  const existingLog = await readJsonFile(paths.changelogFile, createDefaultChangelog());
 
-  await writeJsonAtomic(contextPaths.stateFile, nextState);
-  await writeJsonAtomic(contextPaths.changelogFile, { entries: historyEntries });
+  const events = (Array.isArray(changeEvent) ? changeEvent : [changeEvent]).filter(Boolean);
+  const ts     = events.length ? (events[events.length - 1].timestamp || new Date().toISOString()) : new Date().toISOString();
 
-  if (logger) {
-    logger.debug(`Updated AI context with ${groupedUpdates.length} grouped project intent(s).`);
+  // ── 1. Handle error/resolve events ──────────────────────────────
+  let issueTracker = existing.issue_tracker || createDefaultIssueTracker();
+  for (const ev of events) {
+    if (ev.type === 'error')   issueTracker = applyErrorEvent(issueTracker, ev);
+    if (ev.type === 'resolve') issueTracker = applyResolveEvent(issueTracker, ev);
   }
 
-  if (typeof settings.syncCallback === 'function') {
-    await settings.syncCallback();
+  // ── 2. Build real code-change entries with diffs ────────────────
+  const newCodeChanges = [];
+  for (const ev of events) {
+    if (!ev.file || ev.type === 'error' || ev.type === 'resolve') continue;
+    if (scoreEvent(ev.file) < 2) continue;
+
+    const absPath    = path.join(root, ev.file);
+    const oldContent = ev.oldContent !== undefined ? ev.oldContent : getSnapshot(absPath);
+    let   newContent = ev.newContent;
+    if (newContent === undefined) {
+      newContent = ev.action === 'delete' ? '' : readCurrentContent(absPath);
+    }
+
+    const entry = buildCodeChangeEntry(ev.file, oldContent, newContent, ev.action, ev.timestamp || ts);
+    if (entry) newCodeChanges.push(entry);
   }
+
+  // ── 3. Re-scan project for fresh context ────────────────────────
+  const meta     = detectProjectMetadata(root);
+  const boot     = bootstrapProjectAnalysis(root);
+  const fileList = scanFiles(root, MAX_TREE_DEPTH);
+
+  // ── 4. Merge code_changes (newest first, capped) ────────────────
+  const prevCodeChanges = Array.isArray(existing.code_changes) ? existing.code_changes : [];
+  const allCodeChanges  = [...newCodeChanges, ...prevCodeChanges].slice(0, MAX_CODE_CHANGE_HISTORY);
+
+  // ── 5. Build changelog entries (one per change, rich) ───────────
+  const newChangelogEntries = newCodeChanges.map((c) => ({
+    id:        c.id,
+    timestamp: c.timestamp,
+    file:      c.file,
+    action:    c.action,
+    summary:   c.summary,
+    signals:   c.signals,
+    lines_added:   c.lines_added,
+    lines_removed: c.lines_removed
+    // patch intentionally excluded from changelog to keep it lean
+  }));
+  const prevEntries    = Array.isArray(existingLog.entries) ? existingLog.entries : [];
+  const allEntries     = [...newChangelogEntries, ...prevEntries].slice(0, MAX_CHANGELOG_ENTRIES);
+
+  // ── 6. recent_updates: human-readable, last N changes ───────────
+  const recentUpdates = allCodeChanges.slice(0, MAX_RECENT_UPDATES).map((c) => ({
+    timestamp:    c.timestamp,
+    file:         c.file,
+    action:       c.action,
+    summary:      c.summary,
+    signals:      c.signals,
+    lines_added:  c.lines_added,
+    lines_removed: c.lines_removed
+  }));
+
+  // ── 7. Compose next state ───────────────────────────────────────
+  const nextState = {
+    project:     meta.project,
+    version:     meta.version,
+    description: meta.description || existing.description || '',
+    author:      meta.author      || existing.author      || '',
+    license:     meta.license     || existing.license     || '',
+    homepage:    meta.homepage    || existing.homepage    || '',
+    repository:  meta.repository  || existing.repository  || '',
+
+    last_updated:           ts,
+    tech_stack:             deepMerge(boot.techStack, existing.tech_stack || {}),
+    architecture_patterns:  boot.architecturePatterns.length  ? boot.architecturePatterns  : (existing.architecture_patterns  || []),
+    implementation_details: boot.implementationDetails.length ? boot.implementationDetails : (existing.implementation_details || []),
+    key_features:           boot.keyFeatures.length           ? boot.keyFeatures           : (existing.key_features           || []),
+    current_stage:          stageFromFeatures(boot.keyFeatures, boot.implementationDetails),
+    recent_updates:         recentUpdates,
+    known_issues:           existing.known_issues || [],
+    next_steps:             [],
+
+    // Always refreshed
+    file_tree:     buildFileTree(root),
+    file_list:     fileList,
+    code_files:    buildCodeFileCatalogue(root, fileList),
+    code_changes:  allCodeChanges,
+    api_routes:    extractApiRoutes(root),
+    dependencies:  buildDependencyCatalogue(root),
+    env_variables: scanEnvVars(root),
+
+    // Issue tracking
+    issue_tracker: issueTracker,
+
+    // Preserve working context
+    current_focus:  existing.current_focus  || '',
+    working_branch: existing.working_branch || '',
+    open_questions: existing.open_questions || [],
+    decisions_made: existing.decisions_made || [],
+    session_notes:  existing.session_notes  || []
+  };
+
+  nextState.ai_summary = genAiSummary(nextState, boot);
+  nextState.next_steps  = genNextSteps(nextState, boot);
+
+  // ── 8. Write state, changelog, and auto-regenerate briefing.md ──
+  const briefing = generateBriefing(nextState, root);
+  await writeJsonAtomic(paths.stateFile,     nextState);
+  await writeJsonAtomic(paths.changelogFile, { entries: allEntries });
+  await writeTextAtomic(paths.briefingFile,  briefing);
+
+  if (log) log.debug(`Updated AI context – ${newCodeChanges.length} code change(s) recorded`);
+  if (typeof settings.syncCallback === 'function') await settings.syncCallback();
 
   return nextState;
 }
 
-function isMeaningfulEvent(event) {
-  if (!event || !event.file) {
-    return false;
-  }
-
-  return scoreEvent(event.file) >= 2;
-}
-
-function collapseEventsByFile(events) {
-  const collapsedEvents = new Map();
-
-  for (const event of events) {
-    const normalizedFile = normalizeProjectPath(event.file).toLowerCase();
-    collapsedEvents.set(
-      normalizedFile,
-      Object.assign({}, event, {
-        file: normalizeProjectPath(event.file)
-      })
-    );
-  }
-
-  return Array.from(collapsedEvents.values());
-}
-
-function determineUpdateTimestamp(events) {
-  if (!Array.isArray(events) || events.length === 0) {
-    return new Date().toISOString();
-  }
-
-  const latestEvent = events[events.length - 1];
-  return latestEvent.timestamp || new Date().toISOString();
-}
-
-function classifyChangeArea(filePath) {
-  const lowerPath = normalizeProjectPath(filePath).toLowerCase();
-
-  if (lowerPath === 'package.json') {
-    return 'configuration';
-  }
-
-  if (lowerPath === 'readme.md') {
-    return 'documentation';
-  }
-
-  if (lowerPath.startsWith('bin/')) {
-    return 'cli';
-  }
-
-  if (lowerPath.startsWith('server/') || lowerPath.startsWith('routes/')) {
-    return 'backend';
-  }
-
-  if (
-    lowerPath.startsWith('controllers/') ||
-    lowerPath.startsWith('services/') ||
-    lowerPath.startsWith('middleware/') ||
-    lowerPath.startsWith('config/')
-  ) {
-    return 'application';
-  }
-
-  if (lowerPath.startsWith('core/') || lowerPath.startsWith('src/')) {
-    return 'logic';
-  }
-
-  return 'project';
-}
-
-function detectEventFeatureKey(filePath, bootstrap) {
-  const lowerPath = normalizeProjectPath(filePath).toLowerCase();
-  const signals = bootstrap.signals;
-
-  if (lowerPath === 'package.json') {
-    if (signals.hasGitAutomation) {
-      return 'public_sync';
-    }
-
-    if (signals.hasCliEntry) {
-      return 'cli_automation';
-    }
-
-    return 'config_management';
-  }
-
-  if (lowerPath.startsWith('bin/')) {
-    return 'cli_automation';
-  }
-
-  if (lowerPath.startsWith('server/') || lowerPath.startsWith('routes/')) {
-    if (signals.hasAiContextArtifacts) {
-      return 'local_context_server';
-    }
-
-    return 'rest_api';
-  }
-
-  if (lowerPath.includes('gitsync') || lowerPath.includes('sync')) {
-    return 'public_sync';
-  }
-
-  if (lowerPath.includes('watch')) {
-    return 'change_tracking';
-  }
-
-  if (lowerPath.includes('state') || lowerPath.includes('context')) {
-    return 'ai_context_generation';
-  }
-
-  if (lowerPath.includes('auth') || lowerPath.includes('jwt')) {
-    return 'auth';
-  }
-
-  if (lowerPath.includes('service') || lowerPath.includes('controller')) {
-    return signals.hasAxiosOrFetch ? 'external_api' : 'rest_api';
-  }
-
-  return 'ai_context_generation';
-}
-
-function groupEventsByIntent(events, bootstrap) {
-  if (!Array.isArray(events) || events.length === 0) {
-    return [];
-  }
-
-  const buckets = new Map();
-
-  for (const event of events) {
-    const area = classifyChangeArea(event.file);
-    const featureKey = detectEventFeatureKey(event.file, bootstrap);
-    const key = `${area}:${featureKey}`;
-
-    if (!buckets.has(key)) {
-      buckets.set(key, []);
-    }
-
-    buckets.get(key).push(
-      Object.assign({}, event, {
-        area,
-        featureKey
-      })
-    );
-  }
-
-  return Array.from(buckets.values())
-    .map((group) => interpretIntentGroup(group))
-    .filter(Boolean)
-    .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp));
-}
-
-function interpretIntentGroup(group) {
-  const latestTimestamp = group.reduce((latest, event) => {
-    return new Date(event.timestamp) > new Date(latest) ? event.timestamp : latest;
-  }, group[0].timestamp || new Date().toISOString());
-  const featureKey = group[0].featureKey;
-  const area = group[0].area;
-  const type = determineGroupedUpdateType(group);
-  const subject = describeIntentSubject(featureKey);
-
-  return {
-    timestamp: latestTimestamp,
-    scope: area,
-    title: buildIntentTitle(type, subject),
-    type,
-    impact: describeIntentImpact(type, featureKey),
-    feature_key: featureKey,
-    feature_name: FEATURE_CATALOG[featureKey] || subject
-  };
-}
-
-function determineGroupedUpdateType(group) {
-  const hasAdd = group.some((event) => event.action === 'add');
-  const hasDelete = group.some((event) => event.action === 'delete');
-
-  if (hasAdd) {
-    return 'feature';
-  }
-
-  if (hasDelete) {
-    return 'fix';
-  }
-
-  if (group.length > 2) {
-    return 'refactor';
-  }
-
-  return 'improvement';
-}
-
-function describeIntentSubject(featureKey) {
-  const subjectMap = {
-    ai_context_generation: 'AI context generation workflow',
-    cli_automation: 'CLI automation workflow',
-    change_tracking: 'change tracking workflow',
-    public_sync: 'GitHub sync workflow',
-    local_context_server: 'context delivery service',
-    rest_api: 'API architecture',
-    auth: 'authentication workflow',
-    persistence: 'data persistence layer',
-    realtime: 'real-time communication layer',
-    external_api: 'external integration workflow',
-    middleware: 'request processing workflow',
-    config_management: 'project configuration workflow'
-  };
-
-  return subjectMap[featureKey] || 'project workflow';
-}
-
-function buildIntentTitle(type, subject) {
-  const verbs = {
-    feature: 'Expanded',
-    improvement: 'Improved',
-    refactor: 'Refined',
-    fix: 'Stabilized'
-  };
-
-  return `${verbs[type] || 'Improved'} ${subject}`;
-}
-
-function describeIntentImpact(type, featureKey) {
-  const impactMap = {
-    ai_context_generation: 'Improves the quality of generated AI-readable project context.',
-    cli_automation: 'Improves how developers control the project workflow from the command line.',
-    change_tracking: 'Improves how meaningful project changes are detected without noise.',
-    public_sync: 'Improves how project state is published for external AI consumption.',
-    local_context_server: 'Improves how current project context is delivered over HTTP endpoints.',
-    rest_api: 'Improves the structure and clarity of the project API surface.',
-    auth: 'Improves authentication reliability and access control.',
-    persistence: 'Improves how project data is persisted and retrieved.',
-    realtime: 'Improves real-time communication behavior.',
-    external_api: 'Improves outbound integration reliability.',
-    middleware: 'Improves request handling and middleware orchestration.',
-    config_management: 'Improves project configuration and packaging reliability.'
-  };
-
-  if (type === 'fix') {
-    return impactMap[featureKey].replace(/^Improves /, 'Resolves issues in ');
-  }
-
-  if (type === 'feature') {
-    return impactMap[featureKey].replace(/^Improves /, 'Adds ');
-  }
-
-  return impactMap[featureKey] || 'Improves the overall project workflow.';
-}
-
-function normalizeStoredUpdates(updates) {
-  if (!Array.isArray(updates)) {
-    return [];
-  }
-
-  return dedupeRecentUpdates(
-    updates
-      .map((update) => normalizeStoredUpdate(update))
-      .filter(Boolean)
-  );
-}
-
-function normalizeStoredUpdate(update) {
-  if (!update) {
-    return null;
-  }
-
-  if (update.title && update.type && update.impact) {
-    return {
-      title: update.title,
-      type: normalizeUpdateType(update.type),
-      impact: update.impact
-    };
-  }
-
-  return null;
-}
-
-function normalizeStoredHistoryEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return [];
-  }
-
-  return dedupeHistoryEntries(
-    entries
-      .map((entry) => normalizeStoredHistoryEntry(entry))
-      .filter(Boolean)
-  );
-}
-
-function normalizeStoredHistoryEntry(entry) {
-  if (!entry) {
-    return null;
-  }
-
-  if (entry.title && entry.type && entry.impact) {
-    return {
-      timestamp: entry.timestamp || new Date(0).toISOString(),
-      scope: entry.scope || 'project',
-      title: entry.title,
-      type: normalizeUpdateType(entry.type),
-      impact: entry.impact,
-      feature_key: entry.feature_key || inferFeatureKeyFromText(entry.title, entry.impact),
-      feature_name: entry.feature_name || FEATURE_CATALOG[inferFeatureKeyFromText(entry.title, entry.impact)] || 'Project capability'
-    };
-  }
-
-  return null;
-}
-
-function inferFeatureKeyFromText(title, impact) {
-  const combinedText = `${title || ''} ${impact || ''}`.toLowerCase();
-
-  if (combinedText.includes('jwt') || combinedText.includes('auth')) {
-    return 'auth';
-  }
-
-  if (combinedText.includes('mongo') || combinedText.includes('mongoose') || combinedText.includes('persist')) {
-    return 'persistence';
-  }
-
-  if (combinedText.includes('real-time') || combinedText.includes('socket')) {
-    return 'realtime';
-  }
-
-  if (combinedText.includes('api') || combinedText.includes('route')) {
-    return 'rest_api';
-  }
-
-  if (combinedText.includes('git') || combinedText.includes('publish') || combinedText.includes('sync')) {
-    return 'public_sync';
-  }
-
-  if (combinedText.includes('watch') || combinedText.includes('change')) {
-    return 'change_tracking';
-  }
-
-  if (combinedText.includes('command line') || combinedText.includes('cli')) {
-    return 'cli_automation';
-  }
-
-  if (combinedText.includes('http') || combinedText.includes('context delivery')) {
-    return 'local_context_server';
-  }
-
-  return 'ai_context_generation';
-}
-
-function normalizeUpdateType(type) {
-  if (type === 'feature' || type === 'improvement' || type === 'refactor' || type === 'fix') {
-    return type;
-  }
-
-  if (type === 'removal') {
-    return 'fix';
-  }
-
-  return 'improvement';
-}
-
-function toStateUpdate(update) {
-  return {
-    title: update.title,
-    type: normalizeUpdateType(update.type),
-    impact: update.impact
-  };
-}
-
-function dedupeRecentUpdates(updates) {
-  const seen = new Set();
-  const result = [];
-
-  for (const update of updates.filter(Boolean)) {
-    const key = `${update.title}::${update.type}::${update.impact}`;
-
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    result.push(update);
-  }
-
-  return result;
-}
-
-function dedupeHistoryEntries(entries) {
-  const seen = new Set();
-  const result = [];
-
-  for (const entry of entries.filter(Boolean)) {
-    const key = `${entry.title}::${entry.type}::${entry.feature_key}`;
-
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    result.push(entry);
-  }
-
-  return result.sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp));
-}
-
-function promoteFeatures(historyEntries) {
-  if (!Array.isArray(historyEntries) || historyEntries.length === 0) {
-    return [];
-  }
-
-  const scores = new Map();
-
-  for (const entry of historyEntries) {
-    const featureName = entry.feature_name || FEATURE_CATALOG[entry.feature_key];
-
-    if (!featureName) {
-      continue;
-    }
-
-    scores.set(featureName, (scores.get(featureName) || 0) + scoreHistoryEntry(entry));
-  }
-
-  return Array.from(scores.entries())
-    .sort((left, right) => right[1] - left[1])
-    .map(([featureName]) => featureName)
-    .slice(0, MAX_KEY_FEATURES);
-}
-
-function scoreHistoryEntry(entry) {
-  const weights = {
-    feature: 4,
-    refactor: 3,
-    improvement: 2,
-    fix: 2
-  };
-
-  return weights[normalizeUpdateType(entry.type)] || 1;
-}
-
-function mergeKeyFeatures(primaryFeatures, promotedFeatures) {
-  return uniqueNonEmpty([].concat(primaryFeatures || [], promotedFeatures || [])).slice(0, MAX_KEY_FEATURES);
-}
-
-function deriveKnownIssues(projectRoot, bootstrap) {
-  const knownIssues = [];
-
-  if (!hasTestIndicators(projectRoot)) {
-    knownIssues.push('No automated test suite is detected yet.');
-  }
-
-  if (bootstrap.implementationDetails.length === 0) {
-    knownIssues.push('Project structure exposes limited implementation signals, so deeper architecture details may still be missing.');
-  }
-
-  if (!bootstrap.techStack.framework && bootstrap.techStack.language === 'Node.js') {
-    knownIssues.push('No common Node.js application framework dependency is currently detected.');
-  }
-
-  return knownIssues;
-}
-
-function hasTestIndicators(projectRoot) {
-  const resolvedRoot = resolveProjectRoot(projectRoot);
-  const testPaths = [
-    'test',
-    'tests',
-    '__tests__',
-    'vitest.config.js',
-    'jest.config.js',
-    'jest.config.cjs',
-    'jest.config.mjs'
-  ];
-
-  return testPaths.some((relativePath) => fs.existsSync(path.join(resolvedRoot, relativePath)));
-}
-
-function determineCurrentStage(keyFeatures, historyEntries, implementationDetails) {
-  if (keyFeatures.length >= 4 && implementationDetails.length >= 3) {
-    return 'Production-ready';
-  }
-
-  if (keyFeatures.length >= 2 || historyEntries.length >= 2) {
-    return 'Functional prototype';
-  }
-
-  return 'Early development';
-}
-
-function generateAiSummary(state, bootstrap) {
-  const features = state.key_features || [];
-  const details = bootstrap.implementationDetails || [];
-  const projectType = bootstrap.projectType || 'software project';
-  const normalizedType = projectType === 'backend API platform'
-    ? 'Backend API platform'
-    : capitalize(projectType);
-
-  if (details.some((detail) => detail.includes('JWT')) && details.some((detail) => detail.includes('MongoDB'))) {
-    return `${normalizedType} with JWT authentication and MongoDB-backed application logic.`;
-  }
-
-  if (
-    features.includes(FEATURE_CATALOG.ai_context_generation) &&
-    features.includes(FEATURE_CATALOG.public_sync)
-  ) {
-    return `${normalizedType} that generates AI-readable project context, tracks meaningful changes, and can publish public project state through GitHub.`;
-  }
-
-  if (
-    features.includes(FEATURE_CATALOG.rest_api) &&
-    details.some((detail) => detail.includes('Express'))
-  ) {
-    return `${normalizedType} with RESTful request handling and structured server-side workflow orchestration.`;
-  }
-
-  if (features.length >= 2) {
-    return `${normalizedType} focused on ${features.slice(0, 2).join(' and ').toLowerCase()}.`;
-  }
-
-  if (details.length > 0) {
-    return `${normalizedType} built around ${details[0].toLowerCase()}.`;
-  }
-
-  return `${normalizedType} with detectable project structure and implementation patterns.`;
-}
-
-function generateNextSteps(state, bootstrap, historyEntries) {
-  const nextSteps = [];
-
-  if (state.known_issues.includes('No automated test suite is detected yet.')) {
-    nextSteps.push('Add automated tests that cover the main application flow and critical integration points.');
-  }
-
-  if (bootstrap.implementationDetails.length < 2) {
-    nextSteps.push('Strengthen the project structure so major implementation patterns are easier to detect automatically.');
-  }
-
-  if (historyEntries.length === 0) {
-    nextSteps.push('Capture the next meaningful project update so recent evolution is reflected alongside the bootstrap analysis.');
-  }
-
-  if (state.current_stage === 'Early development') {
-    nextSteps.push('Ship the next core capability to move the project from initial structure into a functional prototype.');
-  }
-
-  return Array.from(new Set(nextSteps)).slice(0, 4);
-}
-
-function uniqueNonEmpty(values) {
-  return Array.from(new Set((values || []).filter(Boolean)));
-}
-
-function capitalize(value) {
-  if (!value) {
-    return '';
-  }
-
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
+// ─────────────────────────────────────────────────────────────────
+//  Debounced updater
+// ─────────────────────────────────────────────────────────────────
 
 function createDebouncedStateUpdater(projectRoot, options) {
-  const settings = Object.assign(
-    {
-      debounceMs: DEFAULT_CONFIG.debounceMs,
-      logger: null,
-      syncCallback: null
-    },
-    options
-  );
-
-  let timer = null;
-  let pendingEvents = [];
-  let activeFlush = Promise.resolve();
+  const s = Object.assign({ debounceMs: DEFAULT_CONFIG.debounceMs, logger: null, syncCallback: null }, options);
+  let timer   = null;
+  let pending = [];
+  let active  = Promise.resolve();
 
   async function flush() {
-    if (pendingEvents.length === 0) {
-      return;
-    }
-
-    const events = pendingEvents.slice();
-    pendingEvents = [];
-
-    activeFlush = activeFlush.then(() =>
-      updateProjectState(projectRoot, events, {
-        logger: settings.logger,
-        syncCallback: settings.syncCallback
-      })
-    );
-
-    await activeFlush;
+    if (!pending.length) return;
+    const evs = pending.slice();
+    pending   = [];
+    active    = active.then(() => updateProjectState(projectRoot, evs, { logger: s.logger, syncCallback: s.syncCallback }));
+    await active;
   }
 
   return {
     enqueue(event) {
-      pendingEvents.push(event);
-
-      if (timer) {
-        clearTimeout(timer);
-      }
-
+      pending.push(event);
+      if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        flush().catch((error) => {
-          if (settings.logger) {
-            settings.logger.error(`Failed to flush AI context updates: ${error.message}`);
-          }
-        });
-      }, settings.debounceMs);
+        flush().catch((err) => { if (s.logger) s.logger.error(`Flush failed: ${err.message}`); });
+      }, s.debounceMs);
     },
     async flushNow() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-
+      if (timer) { clearTimeout(timer); timer = null; }
       await flush();
     }
   };
 }
 
+// ─────────────────────────────────────────────────────────────────
+//  Exports
+// ─────────────────────────────────────────────────────────────────
+
 module.exports = {
   CONTEXT_DIR_NAME,
   DEFAULT_CONFIG,
+  applyErrorEvent,
+  applyResolveEvent,
   bootstrapProjectAnalysis,
+  buildCodeFileCatalogue,
+  buildDependencyCatalogue,
+  buildFileTree,
   createDebouncedStateUpdater,
   createDefaultChangelog,
+  createDefaultIssueTracker,
   createDefaultState,
   detectProjectMetadata,
   ensureContextDirectory,
+  extractApiRoutes,
   getContextPaths,
-  groupEventsByIntent,
   loadRuntimeConfig,
-  promoteFeatures,
   readJsonFile,
   renderTemplate,
+  scanEnvVars,
+  scanFiles,
   scoreEvent,
   shouldIgnoreProjectFile,
   updateRuntimeConfig,
