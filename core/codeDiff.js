@@ -191,6 +191,56 @@ function buildSummary(added, removed, filePath) {
   return `${filePath}: ${parts.join(', ')}`;
 }
 
+function extractPySignals(patch, signals) {
+  const addedLines   = patch.split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1));
+  const removedLines = patch.split('\n').filter((l) => l.startsWith('-')).map((l) => l.slice(1));
+
+  // Functions added/removed
+  const defPattern = /^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+  for (const line of addedLines) {
+    const m = defPattern.exec(line);
+    if (m) signals.push(`Added function \`${m[1]}\``);
+  }
+  for (const line of removedLines) {
+    const m = defPattern.exec(line);
+    if (m) signals.push(`Removed function \`${m[1]}\``);
+  }
+
+  // Classes added/removed
+  const classPattern = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/;
+  for (const line of addedLines) {
+    const m = classPattern.exec(line);
+    if (m) signals.push(`Added class \`${m[1]}\``);
+  }
+  for (const line of removedLines) {
+    const m = classPattern.exec(line);
+    if (m) signals.push(`Removed class \`${m[1]}\``);
+  }
+
+  // Import changes
+  const importPattern = /^(?:import|from)\s+([A-Za-z_][A-Za-z0-9_.]*)/;
+  for (const line of addedLines) {
+    const m = importPattern.exec(line);
+    if (m) signals.push(`Added import \`${m[1]}\``);
+  }
+  for (const line of removedLines) {
+    const m = importPattern.exec(line);
+    if (m) signals.push(`Removed import \`${m[1]}\``);
+  }
+
+  // Decorators
+  if (addedLines.some((l) => /^@/.test(l.trim()))) signals.push('Added decorator');
+
+  // Async
+  if (addedLines.some((l) => /\basync\s+def\b/.test(l))) signals.push('Added async function');
+
+  // Error handling
+  if (addedLines.some((l) => /^\s*(?:try:|except[\s:])/.test(l))) signals.push('Added error handling');
+
+  // Type hints
+  if (addedLines.some((l) => /\)\s*->\s*\w/.test(l))) signals.push('Added return type hint');
+}
+
 /**
  * Extract meaningful code-level signals from a diff patch.
  * Returns array of human-readable strings like:
@@ -205,6 +255,8 @@ function extractCodeSignals(patch, filePath) {
 
   if (['js', 'ts', 'mjs', 'cjs'].includes(ext)) {
     extractJsSignals(patch, signals);
+  } else if (ext === 'py') {
+    extractPySignals(patch, signals);
   } else if (ext === 'json') {
     extractJsonSignals(patch, signals, filePath);
   } else if (ext === 'md') {
