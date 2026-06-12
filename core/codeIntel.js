@@ -27,7 +27,7 @@ const NOTE_SCAN_EXTENSIONS = new Set([
 const NOTE_PATTERN = /(?:\/\/|#|<!--)\s*(TODO|FIXME|HACK|XXX|BUG)\b[:\s-]*(.*?)(?:-->)?\s*$/i;
 
 // ─────────────────────────────────────────────────────────────────
-//  TODO / FIXME / HACK scanning
+//  Developer-note scanning (flags TODO / FIXME / HACK / XXX / BUG)
 // ─────────────────────────────────────────────────────────────────
 
 /**

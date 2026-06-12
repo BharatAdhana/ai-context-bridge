@@ -30,7 +30,7 @@ const IMPORTANT_DIRS = new Set([
 const CODE_EXTENSIONS = new Set(['.js','.ts','.mjs','.cjs','.jsx','.tsx','.py','.go','.rs','.java','.rb','.php','.cs','.swift']);
 const IGNORED_DIRS    = new Set([
   'node_modules','.git','.ai-context','dist','build',
-  'coverage','.tmp','logs','.cache','out','.next','.nuxt'
+  'coverage','.tmp','logs','.cache','out','.next','.nuxt','__pycache__'
 ]);
 
 const DEFAULT_CONFIG = {
@@ -99,7 +99,7 @@ function shouldIgnoreProjectFile(filePath) {
   const base = segs[segs.length - 1] || '';
   if (segs.some((s) => IGNORED_DIRS.has(s)))      return true;
   if (base.startsWith('.'))                        return true;
-  if (/\.(log|tmp|lock)$/.test(base))              return true;
+  if (/\.(log|tmp|lock|pyc|pyo)$/.test(base))              return true;
   if (base === 'package-lock.json' || base === 'yarn.lock' || base === 'pnpm-lock.yaml') return true;
   return false;
 }

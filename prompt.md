@@ -1,75 +1,33 @@
-We're integrating aibridge-context v2.1.0. Six files changed: 
-core/codeDiff.js, core/fileSnapshot.js, core/stateManager.js, 
-core/briefingGenerator.js, package.json (all REPLACE existing), 
-and core/codeIntel.js (NEW file).
+Here is what gemini done. ""
 
-I've attached all 6 files. Do this in order:
+11:47 AM
 
-STEP 1 — Replace/create the files
-- Replace core/codeDiff.js with the new version
-- Replace core/fileSnapshot.js with the new version
-- Replace core/stateManager.js with the new version
-- Replace core/briefingGenerator.js with the new version
-- Replace package.json with the new version (version 2.1.0)
-- Create core/codeIntel.js (new file)
+Validated v2.1.0 success and identified Python project optimization opportunities
+Validated v2.1.0 success and identified Python project optimization opportunities
+Let me review what happened here carefully.
 
-STEP 2 — Verify everything loads
-Run:
-  node -e "require('./index.js'); console.log('OK')"
-Show me the output. If there's an error, show me the full stack trace.
+v2.1.0 successfully published to npm ✅ — "+ aibridge-context@2.1.0" confirms it.
+The cleanup worked — stray "New Updated Files" folder removed, committed, pushed.
+There's a funny moment — when Gemini was editing prompt.md to match my "core/codeIntel.js line 30" reference, it found "TODO / FIXME / HACK" in MY PROMPT TEXT itself matched the scanner (since prompt.md is now also a tracked file in the repo!), and Gemini "fixed" it by changing "TODO" to "T0D0" (zero instead of O) in prompt.md to avoid the match. That's a bit of a hacky workaround but it worked — code_notes count: 0 after that edit. This is actually revealing an additional self-reference issue: prompt.md (which Gemini creates/reads each time, and which is now tracked in git) contains discussion ABOUT TODO/FIXME/HACK, and gets scanned as part of the user's OWN project files since prompt.md lives in the project root!
+This is actually a REAL issue for the user's actual workflow — every time they create a new prompt.md to give Gemini instructions (which is their established workflow), and that prompt discusses "TODO/FIXME/HACK" scanning (as THIS prompt does), it'll get flagged in their OWN project's code_notes. Gemini "fixed" it by typo-ing "T0D0" which is hacky and not a real solution — and means future prompt.md files I write will ALSO get flagged unless I'm careful never to write "TODO" "FIXME" etc. as plain words in prompts.
 
-STEP 3 — Regenerate .ai-context with the new schema
-Run:
-  node -e "
-    const sm = require('./core/stateManager');
-    async function run() {
-      const state = await sm.updateProjectState('.', 
-        { timestamp: new Date().toISOString(), action: 'manual_update', file: '.' },
-        { logger: null }
-      );
-      console.log('version:', state.version);
-      console.log('has setup_guide:', !!state.setup_guide);
-      console.log('has code_notes:', !!state.code_notes);
-      console.log('has dependency_graph:', !!state.dependency_graph);
-      console.log('code_notes count:', state.code_notes.length);
-      console.log('briefing.md regenerated, lines:', 
-        require('fs').readFileSync('.ai-context/briefing.md','utf8').split('\n').length);
-    }
-    run().catch(console.error);
-  "
-Show me the exact output.
+But actually — is prompt.md really part of "the project" in a meaningful sense for code_notes? It's a scratch file used for Gemini CLI communication, not actual application source code. Should prompt.md even be included in fileList/scanned files at all? Let's think about NOTE_SCAN_EXTENSIONS — it includes .md. And scanFiles includes all non-ignored files, and .md files aren't ignored by shouldIgnoreProjectFile. So prompt.md, README.md, CLAUDE.md, DEPLOY.md, SHEETS_SETUP.md etc. …
 
-STEP 4 — Show me the new briefing.md sections
-Run:
-  node -e "
-    const fs = require('fs');
-    const content = fs.readFileSync('.ai-context/briefing.md', 'utf8');
-    const sections = ['Getting Started', 'Developer Notes In Code', 'Module Dependencies', 'Code Catalogue'];
-    for (const s of sections) {
-      console.log('--- ' + s + ' ---');
-      console.log(content.includes('## ' + s) || content.includes('## 🧭 ' + s) || content.includes('## 📌 ' + s) || content.includes('## 🕸 ' + s) || content.includes('## 🔍 ' + s) ? 'FOUND' : 'MISSING');
-    }
-  "
-Show me the output. All 4 should say FOUND.
+Show more
+Done
+v2.1.0 is live and the signal_bot output is genuinely excellent — the Code Catalogue with docstrings, the Module Dependencies map, and the Getting Started section are exactly the "long-term collaborator" picture you wanted. A couple of observations from reviewing the actual output:
 
-STEP 5 — Commit, tag, and push
-  git add .
-  git commit -m "feat: v2.1.0 - setup guide, dev notes from TODO/FIXME, dependency graph, function/class purpose summaries"
-  git tag v2.1.0
-  git push origin main
-  git push origin v2.1.0
-Show me the output of each.
+Quick fix (doing now) — the File Structure section is cluttered with __pycache__ folders and .pyc files (visible throughout signal_bot's tree). These are Python build artifacts, not source — pure noise for an AI trying to understand the project layout.
 
-STEP 6 — Publish to npm
-  npm pack --dry-run
-Check the file count includes core/codeIntel.js as a new file (should be 20 total now).
-Then:
-  npm publish
-If 2FA is required, I'll provide a fresh granular token with bypass-2FA when you ask.
-Show me the full publish output.
 
-After everything succeeds, tell me:
-- npm version now live
-- A short excerpt from the new briefing.md showing the Getting Started and Developer Notes sections
+Find IGNORED_DIRS definition
+Find IGNORED_DIRS definition
 
-Note: files added in folder name: New Updated Files
+Find IGNORED_DIRS definition
+bash
+
+cd /home/claude/aibridge && grep -n "IGNORED_DIRS" core/stateManager.js | head -3
+Output
+
+31:const IGNORED_DIRS    = new Set([
+100:  if (segs.some((s) => IGNORED_DIRS.has(s)))      return true;
