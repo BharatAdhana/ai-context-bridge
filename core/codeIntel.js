@@ -17,6 +17,8 @@ const fs   = require('fs');
 const path = require('path');
 
 const MAX_NOTES = 100;
+const MAX_DERIVED_IMPL_DETAILS = 20;
+const MAX_DERIVED_KEY_FEATURES = 10;
 
 // Languages worth scanning for inline developer notes
 const NOTE_SCAN_EXTENSIONS = new Set([
@@ -246,5 +248,86 @@ function readConfiguredEnvVarNames(root) {
 module.exports = {
   scanCodeNotes,
   buildDependencyGraph,
-  buildSetupGuide
+  buildSetupGuide,
+  deriveProjectCapabilities
 };
+
+// ─────────────────────────────────────────────────────────────────
+//  Project capabilities (architecture/implementation/key-features)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Turns the existing code catalogue + dependency graph into
+ * human-readable architecture/implementation/feature summaries —
+ * entirely from data already extracted (class docstrings, which
+ * files are actually wired into the dependency graph, and the
+ * project's own directory structure). Works for any language;
+ * no hardcoded domain knowledge.
+ *
+ * Returns:
+ *   implementationDetails: ["`ClassName` — docstring", ...]
+ *   keyFeatures:           ["`dir/` — docstring of primary class", ...]
+ *   modularPattern:        "Modular subsystem architecture across: a, b, c" | null
+ */
+function deriveProjectCapabilities(codeFiles, dependencyGraph) {
+  const graph = (dependencyGraph && dependencyGraph.graph) || {};
+
+  // Files that actually participate in the dependency graph (either
+  // import something internal, or are imported by something internal).
+  const usedFiles = new Set();
+  for (const [file, deps] of Object.entries(graph)) {
+    usedFiles.add(file);
+    for (const dep of deps) usedFiles.add(dep);
+  }
+  const hasGraph = usedFiles.size > 0;
+
+  // Collect every documented class, optionally restricted to "used" files.
+  const capabilities = [];
+  for (const [file, info] of Object.entries(codeFiles || {})) {
+    if (hasGraph && !usedFiles.has(file)) continue;
+    for (const cls of (info.classes || [])) {
+      const summary = (info.summaries || {})[cls];
+      if (!summary) continue;
+      capabilities.push({
+        name:        cls,
+        summary,
+        file,
+        dir:         topLevelDir(file),
+        methodCount: ((info.methods || {})[cls] || []).length
+      });
+    }
+  }
+
+  // implementation_details: one line per documented class actually in use
+  const implementationDetails = capabilities
+    .map((c) => `\`${c.name}\` — ${c.summary}`)
+    .slice(0, MAX_DERIVED_IMPL_DETAILS);
+
+  // key_features: one entry per top-level directory, described by its
+  // most substantial (most-methods) documented class
+  const byDir = {};
+  for (const c of capabilities) {
+    if (c.dir === '.') continue;
+    (byDir[c.dir] = byDir[c.dir] || []).push(c);
+  }
+  const keyFeatures = Object.entries(byDir)
+    .map(([dir, classes]) => {
+      const sorted = classes.slice().sort((a, b) => b.methodCount - a.methodCount);
+      return `\`${dir}/\` — ${sorted[0].summary}`;
+    })
+    .slice(0, MAX_DERIVED_KEY_FEATURES);
+
+  // architecture: if the project is organized into multiple subsystem
+  // directories, say so as a single pattern entry
+  const dirs = Object.keys(byDir);
+  const modularPattern = dirs.length >= 2
+    ? `Modular subsystem architecture across: ${dirs.map((d) => `${d}/`).join(', ')}`
+    : null;
+
+  return { implementationDetails, keyFeatures, modularPattern };
+}
+
+function topLevelDir(filePath) {
+  const idx = filePath.indexOf('/');
+  return idx === -1 ? '.' : filePath.slice(0, idx);
+}

@@ -6,7 +6,7 @@ const path = require('path');
 
 const { diffTexts, extractCodeSignals } = require('./codeDiff');
 const { buildCodeFileCatalogue, getSnapshot, readCurrentContent } = require('./fileSnapshot');
-const { scanCodeNotes, buildDependencyGraph, buildSetupGuide } = require('./codeIntel');
+const { scanCodeNotes, buildDependencyGraph, buildSetupGuide, deriveProjectCapabilities } = require('./codeIntel');
 const { generateBriefing } = require('./briefingGenerator');
 
 // ─────────────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ const CONTEXT_DIR_NAME        = '.ai-context';
 const MAX_RECENT_UPDATES      = 15;
 const MAX_CHANGELOG_ENTRIES   = 200;
 const MAX_KEY_FEATURES        = 12;
-const MAX_IMPL_DETAILS        = 15;
+const MAX_IMPL_DETAILS        = 20;
 const MAX_TREE_DEPTH          = 6;
 const MAX_RESOLVED_ISSUES     = 50;
 const MAX_ACTIVE_ERRORS       = 30;
@@ -30,7 +30,7 @@ const IMPORTANT_DIRS = new Set([
 const CODE_EXTENSIONS = new Set(['.js','.ts','.mjs','.cjs','.jsx','.tsx','.py','.go','.rs','.java','.rb','.php','.cs','.swift']);
 const IGNORED_DIRS    = new Set([
   'node_modules','.git','.ai-context','dist','build',
-  'coverage','.tmp','logs','.cache','out','.next','.nuxt','__pycache__'
+  'coverage','.tmp','logs','.cache','out','.next','.nuxt'
 ]);
 
 const DEFAULT_CONFIG = {
@@ -99,7 +99,7 @@ function shouldIgnoreProjectFile(filePath) {
   const base = segs[segs.length - 1] || '';
   if (segs.some((s) => IGNORED_DIRS.has(s)))      return true;
   if (base.startsWith('.'))                        return true;
-  if (/\.(log|tmp|lock|pyc|pyo)$/.test(base))              return true;
+  if (/\.(log|tmp|lock)$/.test(base))              return true;
   if (base === 'package-lock.json' || base === 'yarn.lock' || base === 'pnpm-lock.yaml') return true;
   return false;
 }
@@ -664,6 +664,8 @@ function createDefaultState(projectRoot) {
   const boot      = bootstrapProjectAnalysis(root);
   const fileList  = scanFiles(root, MAX_TREE_DEPTH);
   const codeFiles = buildCodeFileCatalogue(root, fileList);
+  const depGraph  = buildDependencyGraph(root, fileList, codeFiles);
+  const derived   = deriveProjectCapabilities(codeFiles, depGraph);
 
   const state = {
     project:     meta.project,
@@ -677,11 +679,11 @@ function createDefaultState(projectRoot) {
     last_updated:           new Date().toISOString(),
     ai_summary:             '',
     tech_stack:             boot.techStack,
-    architecture_patterns:  boot.architecturePatterns,
-    implementation_details: boot.implementationDetails,
+    architecture_patterns:  uniq([...boot.architecturePatterns, ...(derived.modularPattern ? [derived.modularPattern] : [])]).slice(0, 10),
+    implementation_details: uniq([...boot.implementationDetails, ...derived.implementationDetails]).slice(0, MAX_IMPL_DETAILS),
     current_stage:          stageFromFeatures(boot.keyFeatures, boot.implementationDetails),
     recent_updates:         [],
-    key_features:           boot.keyFeatures,
+    key_features:           uniq([...boot.keyFeatures, ...derived.keyFeatures]).slice(0, MAX_KEY_FEATURES),
     known_issues:           [],
     next_steps:             [],
 
@@ -711,7 +713,7 @@ function createDefaultState(projectRoot) {
     code_notes: scanCodeNotes(root, fileList),
 
     // Internal module dependency graph (which project files import which)
-    dependency_graph: buildDependencyGraph(root, fileList, codeFiles),
+    dependency_graph: depGraph,
 
     // Working context (manually set or updated via CLI)
     current_focus:  '',
@@ -844,6 +846,8 @@ async function updateProjectState(projectRoot, changeEvent, options) {
   const boot          = bootstrapProjectAnalysis(root);
   const fileList      = scanFiles(root, MAX_TREE_DEPTH);
   const freshCodeFiles = buildCodeFileCatalogue(root, fileList);
+  const freshDepGraph  = buildDependencyGraph(root, fileList, freshCodeFiles);
+  const freshDerived   = deriveProjectCapabilities(freshCodeFiles, freshDepGraph);
 
   // ── 4. Merge code_changes (newest first, capped) ────────────────
   const prevCodeChanges = Array.isArray(existing.code_changes) ? existing.code_changes : [];
@@ -887,9 +891,18 @@ async function updateProjectState(projectRoot, changeEvent, options) {
 
     last_updated:           ts,
     tech_stack:             deepMerge(boot.techStack, existing.tech_stack || {}),
-    architecture_patterns:  boot.architecturePatterns.length  ? boot.architecturePatterns  : (existing.architecture_patterns  || []),
-    implementation_details: boot.implementationDetails.length ? boot.implementationDetails : (existing.implementation_details || []),
-    key_features:           boot.keyFeatures.length           ? boot.keyFeatures           : (existing.key_features           || []),
+    architecture_patterns:  uniq([
+                              ...(boot.architecturePatterns.length ? boot.architecturePatterns : (existing.architecture_patterns || [])),
+                              ...(freshDerived.modularPattern ? [freshDerived.modularPattern] : [])
+                            ]).slice(0, 10),
+    implementation_details: uniq([
+                              ...(boot.implementationDetails.length ? boot.implementationDetails : (existing.implementation_details || [])),
+                              ...freshDerived.implementationDetails
+                            ]).slice(0, MAX_IMPL_DETAILS),
+    key_features:           uniq([
+                              ...(boot.keyFeatures.length ? boot.keyFeatures : (existing.key_features || [])),
+                              ...freshDerived.keyFeatures
+                            ]).slice(0, MAX_KEY_FEATURES),
     current_stage:          stageFromFeatures(boot.keyFeatures, boot.implementationDetails),
     recent_updates:         recentUpdates,
     known_issues:           existing.known_issues || [],
@@ -908,7 +921,7 @@ async function updateProjectState(projectRoot, changeEvent, options) {
     code_notes: scanCodeNotes(root, fileList),
 
     // Internal module dependency graph (which project files import which)
-    dependency_graph: buildDependencyGraph(root, fileList, freshCodeFiles),
+    dependency_graph: freshDepGraph,
 
     // Issue tracking
     issue_tracker: issueTracker,
