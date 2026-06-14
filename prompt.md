@@ -8,9 +8,7 @@ Run these one at a time:
 
   git log --oneline -3
 
-Then remove the token from prompt.md — replace any line containing 
-[token removed]
-  [token removed]
+Then remove the token from prompt.md — replacement complete.
 
 Then amend the last commit to overwrite it:
   git add prompt.md
