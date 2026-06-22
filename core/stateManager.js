@@ -28,9 +28,20 @@ const IMPORTANT_DIRS = new Set([
   'services','middleware','lib','utils','api','helpers'
 ]);
 const CODE_EXTENSIONS = new Set(['.js','.ts','.mjs','.cjs','.jsx','.tsx','.py','.go','.rs','.java','.rb','.php','.cs','.swift']);
-const IGNORED_DIRS    = new Set([
-  'node_modules','.git','.ai-context','dist','build',
-  'coverage','.tmp','logs','.cache','out','.next','.nuxt'
+const IGNORED_DIRS = new Set([
+  'node_modules', '.git', '.ai-context', 'dist', 'build',
+  'coverage', '.tmp', 'logs', '.cache', 'out', '.next', '.nuxt',
+  '__pycache__',
+  // Browser profile / Electron cache directories
+  'Cache', 'Cache_Data', 'Code Cache', 'GPUCache', 'DawnGraphiteCache',
+  'DawnWebGPUCache', 'GrShaderCache', 'ShaderCache', 'GraphiteDawnCache',
+  'ScriptCache', 'blob_storage', 'IndexedDB', 'Local Storage',
+  'Session Storage', 'Service Worker', 'shared_proto_db', 'Shared Dictionary',
+  'browser_profiles', 'browser_screenshots',
+  // Other noise
+  'No_Vary_Search', 'segmentation_platform', 'Safe Browsing',
+  'Crashpad', 'component_crx_cache', 'extensions_crx_cache',
+  'RTAMAI_WORKSPACE',
 ]);
 
 const DEFAULT_CONFIG = {
@@ -99,8 +110,14 @@ function shouldIgnoreProjectFile(filePath) {
   const base = segs[segs.length - 1] || '';
   if (segs.some((s) => IGNORED_DIRS.has(s)))      return true;
   if (base.startsWith('.'))                        return true;
-  if (/\.(log|tmp|lock)$/.test(base))              return true;
+  if (/\.(log|tmp|lock|pyc|pyo|pdb|db|db-journal|baj|baf|pma|pb|ldb|dat|bin|onnx|wav|mp3|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|webp|tgz|zip|tar|gz|bak)$/.test(base)) return true;
   if (base === 'package-lock.json' || base === 'yarn.lock' || base === 'pnpm-lock.yaml') return true;
+
+  // Skip one-off fix/patch scripts at root level (fix.py, fix_1c.py, patch_x.py etc.)
+  if (/^(?:fix|patch|apply|check|grep|find|rebrand|update_home|verify|db_check|ping)[_\d].*\.py$/.test(base)) return true;
+  // Skip compiled JS map files and build timestamps
+  if (/\.(timestamp-[\d]+.*\.mjs|d\.ts|tsbuildinfo)$/.test(base)) return true;
+
   return false;
 }
 
@@ -131,6 +148,11 @@ function scanFiles(projectRoot, maxDepth) {
       if (!insideRoot(root, full)) continue;
       const rel  = normPath(path.relative(root, full));
       if (shouldIgnoreProjectFile(rel)) continue;
+
+      // Skip vite/tsc build artifact files with timestamp names
+      if (/vite\.config\.\w+\.timestamp-\d+.*\.mjs$/.test(rel)) continue;
+      if (/tsconfig.*\.tsbuildinfo$/.test(rel)) continue;
+
       if (e.isDirectory()) { visit(full, depth + 1); continue; }
       results.push(rel);
     }
@@ -158,6 +180,11 @@ function buildFileTree(projectRoot) {
       const full = path.join(dir, f.name);
       const rel  = normPath(path.relative(root, full));
       if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel)) continue;
+
+      // Skip vite/tsc build artifact files with timestamp names
+      if (/vite\.config\.\w+\.timestamp-\d+.*\.mjs$/.test(rel)) continue;
+      if (/tsconfig.*\.tsbuildinfo$/.test(rel)) continue;
+
       node[f.name] = null;
     }
     return node;
