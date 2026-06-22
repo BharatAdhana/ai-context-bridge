@@ -223,6 +223,7 @@ async function cmdInit() {
   logger.info(`   Stack:    ${result.metadata.stackLabel}`);
   logger.info(`   Briefing: ${paths.briefingFile}`);
   logger.info('');
+  logger.info('Tip: Create a .aibridge-ignore file to exclude runtime folders from scanning.');
   logger.info('Next step:  npx aibridge-context start');
 }
 
