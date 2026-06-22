@@ -1,6 +1,6 @@
 {
   "name": "aibridge-context",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Zero-config CLI that auto-generates an AI briefing file for any project — tracks code changes with real diffs, errors, fixes, file structure, API routes and dependencies. One command: npx aibridge-context start",
   "main": "./index.js",
   "bin": {
