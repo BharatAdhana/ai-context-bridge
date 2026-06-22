@@ -41,7 +41,6 @@ const IGNORED_DIRS = new Set([
   // Other noise
   'No_Vary_Search', 'segmentation_platform', 'Safe Browsing',
   'Crashpad', 'component_crx_cache', 'extensions_crx_cache',
-  'RTAMAI_WORKSPACE',
 ]);
 
 const DEFAULT_CONFIG = {
@@ -53,6 +52,41 @@ const DEFAULT_CONFIG = {
     remote: 'origin', branch: 'main', repoUrl: ''
   }
 };
+
+function loadUserIgnorePatterns(projectRoot) {
+  const ignoreFiles = ['.aibridge-ignore', '.aicontextignore'];
+  const patterns = new Set();
+  for (const f of ignoreFiles) {
+    const fp = path.join(projectRoot, f);
+    if (!fs.existsSync(fp)) continue;
+    try {
+      for (const line of fs.readFileSync(fp, 'utf8').split('\n')) {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) continue;
+        patterns.add(t.replace(/\/$/, ''));
+      }
+    } catch (_) {}
+  }
+  return patterns;
+}
+
+const AGENT_WORKSPACE_CATEGORY_DIRS = new Set([
+  'Websites', 'Tests', 'Research', 'Emails', 'Data', 'Projects',
+  'browser_profiles', 'browser_screenshots', 'Apps', 'Leads',
+]);
+
+function looksLikeAgentWorkspaceDir(absolutePath) {
+  try {
+    const entries = fs.readdirSync(absolutePath);
+    const subdirs = entries.filter(e => {
+      try { return fs.statSync(path.join(absolutePath, e)).isDirectory(); }
+      catch (_) { return false; }
+    });
+    if (subdirs.length < 3) return false;
+    const matches = subdirs.filter(d => AGENT_WORKSPACE_CATEGORY_DIRS.has(d)).length;
+    return matches >= 2;
+  } catch (_) { return false; }
+}
 
 // ─────────────────────────────────────────────────────────────────
 //  Path helpers
@@ -103,8 +137,16 @@ function insideRoot(root, target) {
 //  Ignore / score
 // ─────────────────────────────────────────────────────────────────
 
-function shouldIgnoreProjectFile(filePath) {
-  const p    = normPath(filePath).toLowerCase();
+function shouldIgnoreProjectFile(relPath, userIgnorePatterns) {
+  // Check user-defined ignore patterns (.aibridge-ignore)
+  const ignoreSegs = relPath.split('/');
+  if (userIgnorePatterns && userIgnorePatterns.size > 0) {
+    for (const seg of ignoreSegs) {
+      if (userIgnorePatterns.has(seg)) return true;
+    }
+  }
+
+  const p    = normPath(relPath).toLowerCase();
   if (!p)    return false;
   const segs = p.split('/').filter(Boolean);
   const base = segs[segs.length - 1] || '';
@@ -138,6 +180,7 @@ function scoreEvent(filePath) {
 
 function scanFiles(projectRoot, maxDepth) {
   const root    = resolveRoot(projectRoot);
+  const userIgnorePatterns = loadUserIgnorePatterns(root);
   const results = [];
   function visit(dir, depth) {
     if (depth > maxDepth) return;
@@ -145,9 +188,15 @@ function scanFiles(projectRoot, maxDepth) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
     for (const e of entries) {
       const full = path.join(dir, e.name);
+
+      // Auto-detect runtime workspace dirs at root level
+      if ((depth === 0 || depth === 1) && looksLikeAgentWorkspaceDir(full)) {
+        continue; // skip entire directory
+      }
+
       if (!insideRoot(root, full)) continue;
       const rel  = normPath(path.relative(root, full));
-      if (shouldIgnoreProjectFile(rel)) continue;
+      if (shouldIgnoreProjectFile(rel, userIgnorePatterns)) continue;
 
       // Skip vite/tsc build artifact files with timestamp names
       if (/vite\.config\.\w+\.timestamp-\d+.*\.mjs$/.test(rel)) continue;
@@ -163,6 +212,7 @@ function scanFiles(projectRoot, maxDepth) {
 
 function buildFileTree(projectRoot) {
   const root = resolveRoot(projectRoot);
+  const userIgnorePatterns = loadUserIgnorePatterns(root);
   function visit(dir, depth) {
     const node = {};
     if (depth > MAX_TREE_DEPTH) return node;
@@ -173,13 +223,16 @@ function buildFileTree(projectRoot) {
     for (const d of dirs) {
       const full = path.join(dir, d.name);
       const rel  = normPath(path.relative(root, full));
-      if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel)) continue;
+
+      if ((depth === 0 || depth === 1) && looksLikeAgentWorkspaceDir(full)) continue;
+
+      if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel, userIgnorePatterns)) continue;
       node[d.name] = visit(full, depth + 1);
     }
     for (const f of files) {
       const full = path.join(dir, f.name);
       const rel  = normPath(path.relative(root, full));
-      if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel)) continue;
+      if (!insideRoot(root, full) || shouldIgnoreProjectFile(rel, userIgnorePatterns)) continue;
 
       // Skip vite/tsc build artifact files with timestamp names
       if (/vite\.config\.\w+\.timestamp-\d+.*\.mjs$/.test(rel)) continue;

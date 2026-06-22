@@ -1,0 +1,17 @@
+# .aibridge-ignore — list folders to exclude from AI context scanning
+# Works like .gitignore — one directory name per line
+# Place this file at your project root as: .aibridge-ignore
+#
+# Common examples:
+
+# Agent runtime workspace (where the AI writes files)
+# workspace
+# RTAMAI_WORKSPACE
+# agent_outputs
+
+# Generated/build output
+# generated
+# exports
+
+# Browser profiles (Electron/Playwright)
+# browser_profiles
