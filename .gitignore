@@ -24,7 +24,8 @@ node_modules/
 
 *.tgz
 
-# Temporary prompts
-
+# Gemini CLI working file — never commit
+prompt.md
+prompt.md.txt
 next-prompt.txt
 next-prompt.txt.txt
