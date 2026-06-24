@@ -425,7 +425,7 @@ function buildInstructions() {
   return [
     sectionHeader('📋 Instructions For The AI Reading This'),
     '1. Read **Start Here** — these are the most important files to understand first.',
-    '2. Read **Getting Started** to know how to install and run this project.',
+    '2. Read **Getting Started** and **Git Context** — know the current branch, latest commit, and build state before making any changes.',
     '3. Read **Active Errors** — fix those before anything else.',
     '4. Read **Resolved Issues** before writing any fix — avoid re-introducing old bugs.',
     '5. Read **Developer Notes In Code** for TODO/FIXME/HACK markers left by past sessions.',
@@ -518,6 +518,24 @@ function buildProjectEvolution(state) {
   return lines.join('\n');
 }
 
+function buildGitContext(state) {
+  const git = state.git_context;
+  if (!git || !git.branch) return '';
+  const lines = [sectionHeader('🔀 Git Context')];
+  lines.push(`**Branch:** \`${git.branch}\``);
+  if (git.commit_hash) {
+    lines.push(`**Latest Commit:** \`${git.commit_hash}\` — ${git.commit_message || ''}`);
+  }
+  lines.push(`**Working Tree:** ${git.is_dirty ? '⚠️ Uncommitted changes present' : '✅ Clean'}`);
+  if (git.is_dirty && git.dirty_files && git.dirty_files.length) {
+    lines.push('');
+    lines.push('Modified files:');
+    for (const f of git.dirty_files) lines.push(`- \`${f}\``);
+  }
+  lines.push(`**Build Output:** ${git.build_output}`);
+  return lines.join('\n');
+}
+
 function generateBriefing(state, projectRoot) {
   const now       = new Date().toISOString();
   const projName  = state.project || path.basename(projectRoot || process.cwd());
@@ -532,6 +550,7 @@ function generateBriefing(state, projectRoot) {
     buildOverview(state),
     buildCoreFiles(state),
     buildSetupGuide(state),
+    buildGitContext(state),
     buildActiveErrors(state),
     buildResolvedIssues(state),
     buildCodeNotes(state),

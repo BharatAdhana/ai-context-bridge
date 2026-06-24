@@ -3,6 +3,7 @@
 const fs   = require('fs');
 const fsp  = require('fs/promises');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const { diffTexts, extractCodeSignals } = require('./codeDiff');
 const { buildCodeFileCatalogue, getSnapshot, readCurrentContent, analyseSourceFile } = require('./fileSnapshot');
@@ -380,6 +381,47 @@ function buildDependencyCatalogue(projectRoot) {
     development: pkg.devDependencies || {},
     peer:        pkg.peerDependencies || {},
     scripts:     pkg.scripts         || {}
+  };
+}
+
+/**
+ * Captures live git state: branch, commit hash, commit message,
+ * whether the working tree is dirty, and whether a build output exists.
+ * All git calls are wrapped in try/catch — if git is not available
+ * or this is not a git repo, returns null fields gracefully.
+ */
+function captureGitContext(projectRoot) {
+  const root = path.resolve(projectRoot || process.cwd());
+  const run = (cmd) => {
+    try {
+      return execSync(cmd, { cwd: root, timeout: 3000, stdio: ['pipe','pipe','pipe'] })
+        .toString().trim();
+    } catch (_) { return null; }
+  };
+
+  const branch      = run('git rev-parse --abbrev-ref HEAD');
+  const commitHash  = run('git rev-parse --short HEAD');
+  const commitMsg   = run('git log -1 --pretty=%s');
+  const statusOut   = run('git status --porcelain');
+  const isDirty     = statusOut !== null && statusOut.length > 0;
+  const dirtyFiles  = isDirty
+    ? statusOut.split('\n').filter(Boolean).slice(0, 10).map(l => l.trim())
+    : [];
+
+  // Check if a build output directory exists
+  const BUILD_DIRS = ['dist', 'build', '.next', 'out', '.nuxt'];
+  const builtDir = BUILD_DIRS.find(d => {
+    try { return require('fs').statSync(path.join(root, d)).isDirectory(); }
+    catch (_) { return false; }
+  }) || null;
+
+  return {
+    branch,
+    commit_hash:   commitHash,
+    commit_message: commitMsg,
+    is_dirty:      isDirty,
+    dirty_files:   dirtyFiles,
+    build_output:  builtDir ? `${builtDir}/ exists` : 'No build output detected'
   };
 }
 
@@ -875,6 +917,7 @@ function createDefaultState(projectRoot) {
   };
 
   state.setup_guide      = buildSetupGuide(root, state);
+  state.git_context = captureGitContext(root);
   state.ai_summary       = genAiSummary(state, boot);
   state.next_steps       = genNextSteps(state, boot);
   state.architecture_flow = buildArchitectureFlow(depGraph, state.setup_guide.entry_point);
@@ -1103,6 +1146,7 @@ async function updateProjectState(projectRoot, changeEvent, options) {
   nextState.ai_summary        = genAiSummary(nextState, boot);
   nextState.next_steps        = genNextSteps(nextState, boot);
   nextState.setup_guide       = buildSetupGuide(root, nextState);
+  nextState.git_context = captureGitContext(root);
   nextState.architecture_flow = buildArchitectureFlow(freshDepGraph, nextState.setup_guide.entry_point);
   nextState.core_files        = rankCoreFiles(freshCodeFiles, freshDepGraph, nextState.setup_guide);
 
